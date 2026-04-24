@@ -1,6 +1,6 @@
 # NEXT-STOPS
 
-NEXT-STOPS is the final project of 2026 Web Programming and Application course.
+**NEXT STOPS** is the final project of 2026 Web Programming and Application course.
 
 ## Project Introduction
 
