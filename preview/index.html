@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NEXT STOPS — Where should I go next?</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Top bar -->
+  <header class="topbar">
+    <a class="brand" href="#/" data-nav="home">
+      <span class="brand-mark">◐</span>
+      <span class="brand-name">NEXT STOPS</span>
+    </a>
+    <nav class="nav">
+      <a class="nav-link" href="#/" data-nav="home">Home</a>
+      <a class="nav-link" href="#/saved" data-nav="saved">
+        Saved <span class="saved-count" id="savedCount">0</span>
+      </a>
+    </nav>
+  </header>
+
+  <main id="view"></main>
+
+  <footer class="footer">
+    <span>NEXT STOPS · Preview prototype · Phase 1 static UI</span>
+  </footer>
+
+  <!-- ============== TEMPLATES ============== -->
+
+  <!-- Home -->
+  <template id="tpl-home">
+    <section class="hero">
+      <p class="eyebrow">A calm way to decide where to go</p>
+      <h1 class="hero-title">
+        Not sure where to <em>go</em> right now?
+      </h1>
+      <p class="hero-sub">
+        Tell us your mood, and NEXT STOPS will find a place that fits your
+        time, weather, and distance — with a reason you can actually read.
+      </p>
+    </section>
+
+    <section class="card panel">
+      <div class="step">
+        <div class="step-head">
+          <span class="step-num">1</span>
+          <h2 class="step-title">How are you feeling?</h2>
+        </div>
+        <div class="chip-grid" id="moodGrid">
+          <!-- moods injected by JS -->
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head">
+          <span class="step-num">2</span>
+          <h2 class="step-title">How much time do you have?</h2>
+        </div>
+        <div class="slider-row">
+          <input type="range" id="timeRange" min="30" max="300" step="15" value="120" />
+          <div class="slider-value"><strong id="timeValue">2h 0m</strong> of free time</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head">
+          <span class="step-num">3</span>
+          <h2 class="step-title">How far are you willing to travel?</h2>
+        </div>
+        <div class="slider-row">
+          <input type="range" id="distRange" min="10" max="90" step="5" value="30" />
+          <div class="slider-value">Up to <strong id="distValue">30 min</strong> away</div>
+        </div>
+      </div>
+
+      <div class="presets">
+        <span class="presets-label">Quick presets</span>
+        <button class="preset" data-preset="evening">Evening walk · 90 min</button>
+        <button class="preset" data-preset="date">Date night · 3 hrs</button>
+        <button class="preset" data-preset="rainy">Rainy day indoor</button>
+        <button class="preset" data-preset="solo">Solo & quiet · 2 hrs</button>
+      </div>
+
+      <button class="cta" id="findBtn">
+        Find my next stop
+        <span class="cta-arrow">→</span>
+      </button>
+    </section>
+
+    <section class="how">
+      <h3>How it works</h3>
+      <ol class="how-steps">
+        <li><strong>Pick a mood.</strong> No forms, no filters to learn.</li>
+        <li><strong>We check the context.</strong> Weather, air quality, travel time, opening hours.</li>
+        <li><strong>You get 3–5 places</strong> with a plain-language reason each.</li>
+      </ol>
+    </section>
+  </template>
+
+  <!-- Results -->
+  <template id="tpl-results">
+    <div class="results-head">
+      <button class="back-btn" data-nav="home">← Back</button>
+      <div class="results-summary" id="resultsSummary"></div>
+    </div>
+    <div class="results-list" id="resultsList"></div>
+    <p class="results-footnote">
+      Don't love these? <a href="#/" data-nav="home">Adjust your mood or time</a> and we'll try again.
+    </p>
+  </template>
+
+  <!-- Detail -->
+  <template id="tpl-detail">
+    <div class="detail-head">
+      <button class="back-btn" id="detailBack">← Back to results</button>
+    </div>
+    <section class="detail-hero">
+      <div class="detail-hero-text">
+        <span class="category-tag" id="detailCategory"></span>
+        <h1 id="detailName"></h1>
+        <p class="detail-address" id="detailAddress"></p>
+        <div class="badge-row" id="detailBadges"></div>
+        <div class="detail-actions">
+          <button class="btn-primary" id="detailSave">Save this place</button>
+          <a class="btn-ghost" id="detailDirections" target="_blank" rel="noreferrer">Get directions</a>
+        </div>
+      </div>
+      <div class="detail-map">
+        <div class="map-shell">
+          <div class="map-grid"></div>
+          <div class="map-pin">📍</div>
+          <div class="map-caption" id="mapCaption"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="detail-grid">
+      <div class="card">
+        <h3>Why this fits you</h3>
+        <p class="reason" id="detailReason"></p>
+      </div>
+      <div class="card">
+        <h3>Right now</h3>
+        <ul class="kv-list" id="detailConditions"></ul>
+      </div>
+      <div class="card">
+        <h3>About this place</h3>
+        <p id="detailDescription"></p>
+      </div>
+      <div class="card">
+        <h3>If it's not your vibe</h3>
+        <ul class="backup-list" id="detailBackups"></ul>
+      </div>
+    </section>
+  </template>
+
+  <!-- Saved -->
+  <template id="tpl-saved">
+    <section class="saved-head">
+      <h1>Your saved places</h1>
+      <p class="saved-sub">A quiet shelf of places to come back to.</p>
+    </section>
+    <div class="saved-list" id="savedList"></div>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>
