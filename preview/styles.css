@@ -81,8 +81,8 @@ button { font-family: inherit; cursor: pointer; }
   justify-content: space-between;
   padding: 18px 32px;
   background: rgba(250, 245, 238, 0.85);
-  backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--line);
 }
 
