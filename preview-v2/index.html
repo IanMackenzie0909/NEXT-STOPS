@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NEXT STOPS Preview V2</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,650&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <a class="brand" href="#home" data-route="home">
+      <span class="brand-mark" aria-hidden="true">NS</span>
+      <span>
+        <strong>NEXT STOPS</strong>
+        <small>Preview V2</small>
+      </span>
+    </a>
+    <nav class="top-nav" aria-label="Primary">
+      <a href="#home" data-route="home">Tune</a>
+      <a href="#results" data-route="results">Results</a>
+      <a href="#saved" data-route="saved">Saved <span id="savedCount">0</span></a>
+    </nav>
+  </header>
+
+  <main id="app"></main>
+
+  <template id="tpl-home">
+    <section class="intro">
+      <div>
+        <p class="eyebrow">Personalized outing test</p>
+        <h1>Before we recommend a place, tune what "good fit" means to you.</h1>
+        <p>
+          This preview treats every score as an initial estimate. Your sliders and feedback
+          change the scoring weights, so the app can learn instead of pretending one formula
+          fits everyone.
+        </p>
+      </div>
+      <aside class="profile-snapshot" id="profileSnapshot"></aside>
+    </section>
+
+    <section class="workspace">
+      <form class="panel calibration" id="calibrationForm">
+        <div class="section-head">
+          <p class="eyebrow">Step 1</p>
+          <h2>Tune your vibe</h2>
+        </div>
+        <div class="slider-stack" id="profileSliders"></div>
+        <button class="ghost-button" type="button" id="resetProfile">Reset profile</button>
+      </form>
+
+      <form class="panel search-form" id="searchForm">
+        <div class="section-head">
+          <p class="eyebrow">Step 2</p>
+          <h2>Set today's context</h2>
+        </div>
+
+        <fieldset>
+          <legend>What do you need right now?</legend>
+          <div class="choice-grid" id="moodChoices"></div>
+        </fieldset>
+
+        <div class="form-grid">
+          <label>
+            Starting area
+            <select id="locationInput">
+              <option value="taipei_main">Taipei Main Station</option>
+              <option value="xinyi">Xinyi District</option>
+              <option value="daan">Da'an Park</option>
+              <option value="songshan">Songshan</option>
+            </select>
+          </label>
+          <label>
+            Weather comfort
+            <select id="weatherInput">
+              <option value="any">Outdoor is fine</option>
+              <option value="indoor">Indoor preferred</option>
+              <option value="avoid_rain">Avoid rain risk</option>
+            </select>
+          </label>
+          <label>
+            Budget today
+            <select id="budgetInput">
+              <option value="medium">Medium</option>
+              <option value="low">Low</option>
+              <option value="flexible">Flexible</option>
+            </select>
+          </label>
+          <label>
+            Time available
+            <select id="timeInput">
+              <option value="75">About 75 min</option>
+              <option value="120" selected>About 2 hours</option>
+              <option value="180">About 3 hours</option>
+              <option value="240">Half day</option>
+            </select>
+          </label>
+          <label>
+            Max travel time
+            <select id="distanceInput">
+              <option value="15">15 min</option>
+              <option value="25">25 min</option>
+              <option value="35" selected>35 min</option>
+              <option value="50">50 min</option>
+            </select>
+          </label>
+          <label>
+            Going with
+            <select id="companyInput">
+              <option value="solo">Solo</option>
+              <option value="date">Date</option>
+              <option value="friends">Friends</option>
+            </select>
+          </label>
+        </div>
+
+        <button class="primary-button" type="submit">Create fit estimates</button>
+      </form>
+    </section>
+  </template>
+
+  <template id="tpl-results">
+    <section class="results-header">
+      <div>
+        <p class="eyebrow">Initial estimates</p>
+        <h1 id="resultsTitle"></h1>
+        <p id="resultsCopy"></p>
+      </div>
+      <button class="ghost-button" data-route="home">Tune again</button>
+    </section>
+
+    <section class="results-layout">
+      <aside class="panel learning-panel">
+        <h2>What the app learned so far</h2>
+        <div id="learningSummary"></div>
+      </aside>
+      <div class="result-list" id="resultList"></div>
+    </section>
+  </template>
+
+  <template id="tpl-detail">
+    <button class="back-link" data-route="results">Back to results</button>
+    <section class="detail-shell" id="detailShell"></section>
+  </template>
+
+  <template id="tpl-saved">
+    <section class="results-header">
+      <div>
+        <p class="eyebrow">Saved shelf</p>
+        <h1>Places you wanted to remember</h1>
+        <p>Notes and saved places stay in localStorage for this frontend test.</p>
+      </div>
+      <button class="ghost-button" data-route="home">Find more</button>
+    </section>
+    <section class="saved-grid" id="savedGrid"></section>
+  </template>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
