@@ -1,4 +1,5 @@
 const STORAGE_KEY = "nextstops:v2";
+const SCORE_VERSION = 2;
 
 const MOODS = [
   { id: "reset", label: "Reset my head", hint: "quiet, low pressure" },
@@ -167,6 +168,7 @@ const DEFAULT_STATE = {
   saved: [],
   results: [],
   selectedPlaceId: null,
+  scoreVersion: SCORE_VERSION,
 };
 
 let state = loadState();
@@ -187,7 +189,8 @@ function loadState() {
       profile: { ...DEFAULT_STATE.profile, ...(stored.profile || {}) },
       feedback: stored.feedback || [],
       saved: stored.saved || [],
-      results: stored.results || [],
+      results: stored.scoreVersion === SCORE_VERSION ? stored.results || [] : [],
+      scoreVersion: SCORE_VERSION,
     };
   } catch {
     return structuredClone(DEFAULT_STATE);
@@ -342,8 +345,7 @@ function bindContextInputs() {
 function scorePlaces() {
   return PLACES.map((place) => {
     const breakdown = buildBreakdown(place);
-    const rawScore = breakdown.reduce((sum, item) => sum + item.points, 42);
-    const score = Math.round(Math.max(18, Math.min(96, rawScore)));
+    const score = calculateScore(breakdown);
     return {
       id: place.id,
       score,
@@ -359,7 +361,7 @@ function buildBreakdown(place) {
   const context = state.context;
   const travel = place.travel[context.location];
   const moodFit = place.moods.includes(state.selectedMood) ? 1 : 0.25;
-  const travelFit = clamp01(1 - Math.max(0, travel - context.distance) / 35);
+  const travelFit = travelFitFor(travel, context.distance);
   const budgetFit = budgetFitFor(place);
   const weatherFit = weatherFitFor(place);
   const companyFit = companyFitFor(place);
@@ -386,6 +388,16 @@ function weighted(label, fit, weight, note) {
     weight,
     note,
   };
+}
+
+function calculateScore(breakdown) {
+  const scoredSignals = breakdown.filter((item) => item.label !== "Your feedback");
+  const feedback = breakdown.find((item) => item.label === "Your feedback")?.points || 0;
+  const earned = scoredSignals.reduce((sum, item) => sum + item.points, 0);
+  const possible = scoredSignals.reduce((sum, item) => sum + item.weight, 0);
+  const normalizedFit = possible ? earned / possible : 0;
+  const score = 28 + normalizedFit * 68 + feedback;
+  return Math.round(Math.max(18, Math.min(96, score)));
 }
 
 function feedbackAdjustment(place) {
@@ -425,6 +437,13 @@ function weatherFitFor(place) {
   if (state.context.weather === "indoor") return place.indoor;
   if (state.context.weather === "avoid_rain") return place.weather === "indoor" ? 1 : place.weather === "mixed" ? 0.75 : 0.35;
   return 0.7;
+}
+
+function travelFitFor(travel, limit) {
+  if (travel <= limit) {
+    return clamp01(1 - (travel / limit) * 0.35);
+  }
+  return clamp01(0.65 - (travel - limit) / 35);
 }
 
 function companyFitFor(place) {
@@ -650,7 +669,7 @@ function scoreSingle(place) {
   const breakdown = buildBreakdown(place);
   return {
     id: place.id,
-    score: Math.round(Math.max(18, Math.min(96, breakdown.reduce((sum, item) => sum + item.points, 42)))),
+    score: calculateScore(breakdown),
     confidence: confidenceLabel(),
     breakdown,
     reason: buildReason(place, breakdown),
