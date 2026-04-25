@@ -30,6 +30,8 @@ const PLACES = [
     aqi_value: 42,
     weather_summary: "Clear · 24°C · light breeze",
     indoor: false,
+    budget: "low",
+    route_hint: "MRT or bus, then an easy riverside walk.",
     moods: ["relaxing_walk", "solo_quiet", "photo", "date"],
     score: 88,
     description:
@@ -55,6 +57,8 @@ const PLACES = [
     aqi_value: 68,
     weather_summary: "Partly cloudy · 23°C",
     indoor: true,
+    budget: "medium",
+    route_hint: "Short transit ride with a calm street walk at the end.",
     moods: ["date", "solo_quiet", "photo", "rainy_backup"],
     score: 84,
     description:
@@ -80,6 +84,8 @@ const PLACES = [
     aqi_value: 72,
     weather_summary: "Indoor spaces available",
     indoor: true,
+    budget: "medium",
+    route_hint: "Direct transit access and a short walk from the station.",
     moods: ["rainy_backup", "date", "photo"],
     score: 81,
     description:
@@ -105,6 +111,8 @@ const PLACES = [
     aqi_value: 38,
     weather_summary: "Clear · 22°C at summit",
     indoor: false,
+    budget: "low",
+    route_hint: "Transit to Xiangshan, followed by a steep stair climb.",
     moods: ["photo", "night_out", "solo_quiet"],
     score: 79,
     description:
@@ -129,6 +137,8 @@ const PLACES = [
     aqi_value: 75,
     weather_summary: "Mostly covered stalls",
     indoor: false,
+    budget: "low",
+    route_hint: "Transit nearby, then a compact food-street walk.",
     moods: ["night_out", "date", "photo"],
     score: 76,
     description:
@@ -148,8 +158,37 @@ const state = {
   selectedMood: null,
   time: 120,        // minutes
   distance: 30,     // minutes
+  location: "taipei_main",
+  weatherPreference: "any",
+  budget: "medium",
   results: [],
   saved: loadSaved(),
+};
+
+const LOCATION_LABELS = {
+  taipei_main: "Taipei Main Station",
+  xinyi: "Xinyi District",
+  daan: "Da'an Park",
+  songshan: "Songshan",
+};
+
+const WEATHER_LABELS = {
+  any: "outdoor is fine",
+  indoor: "indoor preferred",
+  avoid_rain: "avoiding rain risk",
+};
+
+const BUDGET_LABELS = {
+  low: "low budget",
+  medium: "medium budget",
+  flexible: "flexible budget",
+};
+
+const LOCATION_TIME_ADJUSTMENTS = {
+  taipei_main: {},
+  xinyi: { place_001: 10, place_002: 4, place_003: 2, place_004: -12, place_005: 8 },
+  daan: { place_001: 6, place_002: 2, place_003: -4, place_004: -2, place_005: 4 },
+  songshan: { place_001: 8, place_002: -8, place_003: 3, place_004: 2, place_005: 7 },
 };
 
 function loadSaved() {
@@ -168,31 +207,48 @@ function isSaved(id) { return state.saved.some(p => p.id === id); }
 
 // --------------------------- Recommendation (mock scoring) ---------------------------
 
-function scorePlaces({ mood, time, distance }) {
+function travelTimeFor(place) {
+  const offset = LOCATION_TIME_ADJUSTMENTS[state.location]?.[place.id] || 0;
+  return Math.max(8, place.travel_time_minutes + offset);
+}
+
+function scorePlaces({ mood, time, distance, weatherPreference, budget }) {
   const scored = PLACES.map(p => {
+    const travelTime = travelTimeFor(p);
     let score = 50; // base
     if (mood && p.moods.includes(mood)) score += 25;
-    if (p.travel_time_minutes <= distance) score += 20;
+    if (travelTime <= distance) score += 20;
     else score -= 15;
-    if (p.travel_time_minutes <= distance * 0.6) score += 5;
+    if (travelTime <= distance * 0.6) score += 5;
     if (p.open_now) score += 10;
     if (p.aqi_status === "good") score += 5;
     if (p.aqi_status === "poor") score -= 15;
+    if (weatherPreference === "indoor" && p.indoor) score += 12;
+    if (weatherPreference === "indoor" && !p.indoor) score -= 6;
+    if (weatherPreference === "avoid_rain" && (p.indoor || p.weather_status === "any")) score += 10;
+    if (weatherPreference === "avoid_rain" && !p.indoor && p.weather_status === "suitable") score -= 5;
+    if (budget === "low" && p.budget === "low") score += 8;
+    if (budget === "low" && p.budget !== "low") score -= 4;
+    if (budget === "medium" && p.budget !== "flexible") score += 4;
     score = Math.max(35, Math.min(98, score));
 
-    const reason = buildReason(p, { mood, time });
-    return { ...p, score, reason };
+    const reason = buildReason(p, { mood, time, weatherPreference, budget, travelTime });
+    return { ...p, score, reason, matched_travel_time: travelTime };
   });
   return scored.sort((a, b) => b.score - a.score).slice(0, 4);
 }
 
-function buildReason(place, { mood, time }) {
+function buildReason(place, { mood, weatherPreference, budget, travelTime }) {
   const moodLabel = MOODS.find(m => m.id === mood)?.label.toLowerCase();
   const prefix = moodLabel
     ? `This place fits a ${moodLabel} mood — it `
     : "This place ";
-  const filled = place.reasonTemplate.replace("${time}", place.travel_time_minutes);
-  return prefix + filled;
+  const filled = place.reasonTemplate.replace("${time}", travelTime ?? travelTimeFor(place));
+  const context = [];
+  if (weatherPreference === "indoor" && place.indoor) context.push("keeps you mostly indoors");
+  if (weatherPreference === "avoid_rain" && (place.indoor || place.weather_status === "any")) context.push("has a safer rainy-day fallback");
+  if (budget === "low" && place.budget === "low") context.push("stays budget-friendly");
+  return prefix + filled + (context.length ? ` It also ${context.join(" and ")}.` : "");
 }
 
 function formatTime(mins) {
@@ -286,9 +342,15 @@ function renderHome() {
   const timeValue = document.getElementById("timeValue");
   const distRange = document.getElementById("distRange");
   const distValue = document.getElementById("distValue");
+  const locationSelect = document.getElementById("locationSelect");
+  const weatherSelect = document.getElementById("weatherSelect");
+  const budgetSelect = document.getElementById("budgetSelect");
 
   timeRange.value = state.time;
   distRange.value = state.distance;
+  locationSelect.value = state.location;
+  weatherSelect.value = state.weatherPreference;
+  budgetSelect.value = state.budget;
   timeValue.textContent = formatTime(state.time);
   distValue.textContent = `${state.distance} min`;
 
@@ -299,6 +361,15 @@ function renderHome() {
   distRange.addEventListener("input", () => {
     state.distance = +distRange.value;
     distValue.textContent = `${state.distance} min`;
+  });
+  locationSelect.addEventListener("change", () => {
+    state.location = locationSelect.value;
+  });
+  weatherSelect.addEventListener("change", () => {
+    state.weatherPreference = weatherSelect.value;
+  });
+  budgetSelect.addEventListener("change", () => {
+    state.budget = budgetSelect.value;
   });
 
   // Presets
@@ -323,16 +394,18 @@ function updateFindButton() {
 
 function applyPreset(kind) {
   const presets = {
-    evening: { mood: "relaxing_walk", time: 90,  distance: 25 },
-    date:    { mood: "date",          time: 180, distance: 35 },
-    rainy:   { mood: "rainy_backup",  time: 120, distance: 20 },
-    solo:    { mood: "solo_quiet",    time: 120, distance: 30 },
+    evening: { mood: "relaxing_walk", time: 90,  distance: 25, weatherPreference: "any", budget: "low" },
+    date:    { mood: "date",          time: 180, distance: 35, weatherPreference: "any", budget: "flexible" },
+    rainy:   { mood: "rainy_backup",  time: 120, distance: 20, weatherPreference: "indoor", budget: "medium" },
+    solo:    { mood: "solo_quiet",    time: 120, distance: 30, weatherPreference: "avoid_rain", budget: "low" },
   };
   const p = presets[kind];
   if (!p) return;
   state.selectedMood = p.mood;
   state.time = p.time;
   state.distance = p.distance;
+  if (p.weatherPreference) state.weatherPreference = p.weatherPreference;
+  if (p.budget) state.budget = p.budget;
   renderHome(); // easiest way to reflect all the changed controls
 }
 
@@ -342,6 +415,8 @@ function onFind() {
     mood: state.selectedMood,
     time: state.time,
     distance: state.distance,
+    weatherPreference: state.weatherPreference,
+    budget: state.budget,
   });
   go("/results");
 }
@@ -356,6 +431,8 @@ function renderResults() {
       mood: state.selectedMood,
       time: state.time,
       distance: state.distance,
+      weatherPreference: state.weatherPreference,
+      budget: state.budget,
     });
   }
 
@@ -363,13 +440,15 @@ function renderResults() {
 
   const moodLabel = MOODS.find(m => m.id === state.selectedMood)?.label.toLowerCase() || "a good outing";
   document.getElementById("resultsSummary").innerHTML =
-    `Based on <em>${moodLabel}</em>, <em>${formatTime(state.time)}</em> of time, and up to <em>${state.distance} min</em> away, here are ${state.results.length} places that fit.`;
+    `Based on <em>${moodLabel}</em>, <em>${formatTime(state.time)}</em> of time, <em>${LOCATION_LABELS[state.location]}</em>, <em>${WEATHER_LABELS[state.weatherPreference]}</em>, and <em>${BUDGET_LABELS[state.budget]}</em>, here are ${state.results.length} places that fit.`;
 
   const list = document.getElementById("resultsList");
   state.results.forEach((p, i) => list.appendChild(placeCard(p, i + 1)));
 }
 
 function placeCard(p, rank) {
+  const travelTime = p.matched_travel_time ?? travelTimeFor(p);
+  const backup = p.backup_options?.[0];
   const el = document.createElement("article");
   el.className = "place-card";
   el.innerHTML = `
@@ -378,12 +457,15 @@ function placeCard(p, rank) {
       <h3 class="place-name">${p.name}</h3>
       <p class="place-meta">${p.category} · ${p.address.split(",")[0]}</p>
       <div class="badge-row">
-        <span class="badge primary">🚇 ${p.travel_time_minutes} min away</span>
+        <span class="badge primary">🚇 ${travelTime} min away</span>
+        <span class="badge cool">${placeTag(p, rank)}</span>
         <span class="badge ${p.weather_status === "suitable" ? "ok" : "cool"}">${weatherLabel(p)}</span>
         <span class="badge ${aqiClass(p.aqi_status)}">AQI ${p.aqi_value} · ${p.aqi_status}</span>
+        <span class="badge">${budgetLabel(p.budget)}</span>
         ${p.open_now ? `<span class="badge ok">Open now</span>` : `<span class="badge warn">Closed</span>`}
       </div>
       <p class="place-reason">${p.reason}</p>
+      ${backup ? `<p class="place-backup"><strong>Backup nearby:</strong> ${backup.name} · ${backup.category}</p>` : ""}
     </div>
     <div class="score-dial" style="--score:${p.score}">
       <div class="score-inner">
@@ -409,6 +491,27 @@ function placeCard(p, rank) {
   return el;
 }
 
+function placeTag(p, rank) {
+  if (rank === 1) return "Best match";
+  if (state.weatherPreference === "indoor" && p.indoor) return "Indoor safe";
+  if ((p.matched_travel_time ?? travelTimeFor(p)) <= 18) return "Quick trip";
+  if (p.budget === "low") return "Budget friendly";
+  return "Easy option";
+}
+
+function budgetLabel(value) {
+  if (value === "low") return "Low spend";
+  if (value === "flexible") return "Flexible spend";
+  return "Medium spend";
+}
+
+function timeFitLabel(travelTime) {
+  const outingTime = Math.max(0, state.time - travelTime * 2);
+  if (outingTime >= 90) return "Comfortable pace";
+  if (outingTime >= 45) return "Works as a short outing";
+  return "Tight but possible";
+}
+
 function weatherLabel(p) {
   if (p.weather_status === "suitable") return `☀ ${p.weather_summary}`;
   if (p.weather_status === "any")      return `🏠 ${p.weather_summary}`;
@@ -429,7 +532,13 @@ function renderDetail(id) {
   mount("tpl-detail");
 
   // Build a reason even if we arrived directly
-  const reason = buildReason(p, { mood: state.selectedMood, time: state.time });
+  const travelTime = travelTimeFor(p);
+  const reason = buildReason(p, {
+    mood: state.selectedMood,
+    weatherPreference: state.weatherPreference,
+    budget: state.budget,
+    travelTime,
+  });
 
   document.getElementById("detailCategory").textContent = p.category;
   document.getElementById("detailName").textContent = p.name;
@@ -441,10 +550,20 @@ function renderDetail(id) {
   // Badges
   const badges = document.getElementById("detailBadges");
   badges.innerHTML = `
-    <span class="badge primary">🚇 ${p.travel_time_minutes} min away</span>
+    <span class="badge primary">🚇 ${travelTime} min away</span>
     <span class="badge ${p.weather_status === "suitable" ? "ok" : "cool"}">${weatherLabel(p)}</span>
     <span class="badge ${aqiClass(p.aqi_status)}">AQI ${p.aqi_value}</span>
+    <span class="badge">${budgetLabel(p.budget)}</span>
     ${p.open_now ? `<span class="badge ok">Open now</span>` : `<span class="badge warn">Closed</span>`}
+  `;
+
+  // Route preview
+  const route = document.getElementById("detailRoute");
+  route.innerHTML = `
+    <li><span>Start</span><span class="kv-val">${LOCATION_LABELS[state.location]}</span></li>
+    <li><span>Transit estimate</span><span class="kv-val">${travelTime} min</span></li>
+    <li><span>Route feel</span><span class="kv-val">${p.route_hint}</span></li>
+    <li><span>Time fit</span><span class="kv-val">${timeFitLabel(travelTime)}</span></li>
   `;
 
   // Conditions (right now)
@@ -452,7 +571,7 @@ function renderDetail(id) {
   conditions.innerHTML = `
     <li><span>Weather</span><span class="kv-val">${p.weather_summary}</span></li>
     <li><span>Air quality</span><span class="kv-val">AQI ${p.aqi_value} (${p.aqi_status})</span></li>
-    <li><span>Travel time</span><span class="kv-val">${p.travel_time_minutes} min by transit</span></li>
+    <li><span>Travel time</span><span class="kv-val">${travelTime} min by transit</span></li>
     <li><span>Status</span><span class="kv-val">${p.open_now ? "Open now" : "Closed"}</span></li>
     <li><span>Rating</span><span class="kv-val">★ ${p.rating.toFixed(1)}</span></li>
   `;
@@ -463,6 +582,7 @@ function renderDetail(id) {
   p.backup_options.forEach(b => {
     const li = document.createElement("li");
     li.innerHTML = `<span class="backup-name">${b.name}</span><span class="backup-cat">${b.category}</span>`;
+    li.addEventListener("click", () => toast(`${b.name} would open as a backup option in the MVP`));
     backups.appendChild(li);
   });
 
@@ -512,12 +632,24 @@ function renderSaved() {
       <p class="saved-meta" style="color: var(--ink-muted); font-size: 0.82rem;">
         Saved ${new Date(p.created_at).toLocaleDateString()}
       </p>
+      <label class="note-field">
+        <span>Note</span>
+        <textarea data-note="${p.id}" rows="2" placeholder="Why save this one?">${p.note || ""}</textarea>
+      </label>
       <div class="saved-actions">
         <button class="btn-ghost" data-view="${p.id}">View</button>
+        <button class="btn-primary" data-plan="${p.id}">Add to plan</button>
         <button class="btn-ghost" data-remove="${p.id}">Remove</button>
       </div>
     `;
     card.querySelector("[data-view]").addEventListener("click", () => go(`/place/${p.id}`));
+    card.querySelector("[data-plan]").addEventListener("click", () => {
+      toast(`${p.name} added to today's test plan`);
+    });
+    card.querySelector("[data-note]").addEventListener("input", (e) => {
+      state.saved = state.saved.map(s => s.id === p.id ? { ...s, note: e.target.value } : s);
+      persistSaved();
+    });
     card.querySelector("[data-remove]").addEventListener("click", () => {
       state.saved = state.saved.filter(s => s.id !== p.id);
       persistSaved();
@@ -542,6 +674,7 @@ function toggleSave(p) {
       address: p.address,
       lat: p.lat,
       lng: p.lng,
+      note: "",
       created_at: new Date().toISOString(),
     });
     toast("Saved for later");

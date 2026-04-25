@@ -78,6 +78,34 @@
         </div>
       </div>
 
+      <div class="context-grid">
+        <div class="context-field">
+          <label for="locationSelect">Starting area</label>
+          <select id="locationSelect">
+            <option value="taipei_main">Taipei Main Station</option>
+            <option value="xinyi">Xinyi District</option>
+            <option value="daan">Da'an Park</option>
+            <option value="songshan">Songshan</option>
+          </select>
+        </div>
+        <div class="context-field">
+          <label for="weatherSelect">Weather comfort</label>
+          <select id="weatherSelect">
+            <option value="any">Outdoor is fine</option>
+            <option value="indoor">Indoor preferred</option>
+            <option value="avoid_rain">Avoid rain risk</option>
+          </select>
+        </div>
+        <div class="context-field">
+          <label for="budgetSelect">Budget</label>
+          <select id="budgetSelect">
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+            <option value="flexible">Flexible</option>
+          </select>
+        </div>
+      </div>
+
       <div class="presets">
         <span class="presets-label">Quick presets</span>
         <button class="preset" data-preset="evening">Evening walk · 90 min</button>
@@ -140,6 +168,10 @@
     </section>
 
     <section class="detail-grid">
+      <div class="card route-card">
+        <h3>Route preview</h3>
+        <ul class="kv-list" id="detailRoute"></ul>
+      </div>
       <div class="card">
         <h3>Why this fits you</h3>
         <p class="reason" id="detailReason"></p>
