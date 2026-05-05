@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: radial-gradient(circle at top left, #EEF3FF 0%, #F6FAF7 38%, #FFFFFF 100%);
+  color: #111827;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+}
+button { font: inherit; }
+.prototype-shell { min-height: 100vh; display: grid; place-items: center; padding: 28px; }
+.phone {
+  width: 390px;
+  min-height: 844px;
+  border-radius: 42px;
+  padding: 14px;
+  background: #111827;
+  box-shadow: 0 28px 90px rgba(15, 23, 42, 0.22);
+}
+.phone-screen {
+  min-height: 816px;
+  border-radius: 32px;
+  overflow: hidden;
+  background: #F6FAF7;
+  position: relative;
+}
+.soft-gradient { background: linear-gradient(135deg, #6366F1 0%, #A78BFA 100%); }
+.breathe { animation: breathe 4.5s ease-in-out infinite; }
+@keyframes breathe { 0%, 100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-4px) scale(1.01); } }
+.fade-up { animation: fadeUp .45s ease-out both; }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
