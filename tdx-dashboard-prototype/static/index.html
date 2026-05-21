@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TRA Live Board Prototype</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">TRA Live Board</p>
+          <h1>台鐵車站動態</h1>
+        </div>
+        <div class="clock">
+          <span>現在時間</span>
+          <strong id="currentTime">--:--:--</strong>
+        </div>
+      </header>
+
+      <section class="control-panel" aria-label="Station controls">
+        <div class="search-block">
+          <label for="stationSearch">查詢車站</label>
+          <div class="search-row">
+            <input id="stationSearch" type="search" autocomplete="off" placeholder="輸入站名或 Station ID，例如：臺中、Taichung、3300" />
+            <button id="refreshButton" type="button">重新整理</button>
+          </div>
+          <div id="stationResults" class="station-results" role="listbox"></div>
+        </div>
+
+        <div class="station-meta">
+          <span id="stationId">3300</span>
+          <strong id="stationName">臺中</strong>
+          <small id="stationNameEn">Taichung</small>
+        </div>
+      </section>
+
+      <section class="summary-grid" aria-label="Live summary">
+        <div class="metric">
+          <span>全部班次</span>
+          <strong id="totalCount">0</strong>
+        </div>
+        <div class="metric">
+          <span>北上</span>
+          <strong id="northCount">0</strong>
+        </div>
+        <div class="metric">
+          <span>南下</span>
+          <strong id="southCount">0</strong>
+        </div>
+        <div class="metric">
+          <span>資料更新</span>
+          <strong id="dataUpdatedAt">--:--:--</strong>
+          <small id="systemStatus">待更新</small>
+        </div>
+      </section>
+
+      <section class="board-grid">
+        <section class="board" aria-labelledby="northTitle">
+          <div class="board-header">
+            <h2 id="northTitle">北上列車</h2>
+            <span id="northBadge">0 班</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>車次</th>
+                  <th>車種</th>
+                  <th>終點</th>
+                  <th>到站</th>
+                  <th>發車</th>
+                  <th>延誤</th>
+                  <th>狀態</th>
+                </tr>
+              </thead>
+              <tbody id="northRows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="board" aria-labelledby="southTitle">
+          <div class="board-header">
+            <h2 id="southTitle">南下列車</h2>
+            <span id="southBadge">0 班</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>車次</th>
+                  <th>車種</th>
+                  <th>終點</th>
+                  <th>到站</th>
+                  <th>發車</th>
+                  <th>延誤</th>
+                  <th>狀態</th>
+                </tr>
+              </thead>
+              <tbody id="southRows"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,2 +1,12 @@
 NEXT_STOPS_Developer_Documentation.md
 .vscode/
+env/
+
+*.zip
+
+next_stops_figma_pack/
+node_modules/
+.next/
+
+API Client.txt
+RailLiveBoard StationID.xml
