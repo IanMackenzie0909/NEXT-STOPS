@@ -17,7 +17,7 @@ STATIC_ROOT = ROOT / "static"
 BASE_URL = "https://tdx.transportdata.tw/api/basic/v2"
 MAX_STATION_RESULTS = 300
 
-TDX_MODULE_PATH = "TDX-API_clients.py"
+TDX_MODULE_PATH = "TDX-TR_API_clients.py"
 spec = importlib.util.spec_from_file_location("tdx_api_clients", TDX_MODULE_PATH)
 tdx_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tdx_module)

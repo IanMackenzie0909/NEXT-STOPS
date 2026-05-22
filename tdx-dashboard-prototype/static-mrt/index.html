@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TRTC MRT Live Board</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">TRTC MRT Live Board</p>
+          <h1>台北捷運即時到站</h1>
+        </div>
+        <div class="clock">
+          <span>現在時間</span>
+          <strong id="currentTime">--:--:--</strong>
+        </div>
+      </header>
+
+      <section class="control-panel" aria-label="Station controls">
+        <div class="search-block">
+          <label for="stationSearch">查詢捷運站</label>
+          <div class="search-row">
+            <input id="stationSearch" type="search" autocomplete="off" placeholder="輸入站名或 Station ID，例如：土城、Tucheng、BL03" />
+            <button id="refreshButton" type="button">更新</button>
+          </div>
+          <div id="stationResults" class="station-results" role="listbox"></div>
+        </div>
+
+        <div class="station-meta">
+          <span id="stationId">BL03</span>
+          <strong id="stationName">土城</strong>
+          <small id="stationNameEn">Tucheng</small>
+        </div>
+      </section>
+
+      <section class="summary-grid" aria-label="Live summary">
+        <div class="metric">
+          <span>看板筆數</span>
+          <strong id="totalCount">0</strong>
+        </div>
+        <div class="metric">
+          <span>正常服務</span>
+          <strong id="normalCount">0</strong>
+        </div>
+        <div class="metric">
+          <span>月台方向</span>
+          <strong id="directionCount">0</strong>
+        </div>
+        <div class="metric">
+          <span>3 分內</span>
+          <strong id="arrivingCount">0</strong>
+        </div>
+        <div class="metric">
+          <span>資料更新</span>
+          <strong id="dataUpdatedAt">--:--:--</strong>
+          <small id="systemStatus">待更新</small>
+        </div>
+      </section>
+
+      <section id="directionBoards" class="direction-grid" aria-label="MRT direction live boards"></section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
