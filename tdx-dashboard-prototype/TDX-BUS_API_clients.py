@@ -6,18 +6,23 @@ from datetime import datetime
 from urllib.parse import quote
 
 
-client_id = 'your-TDX-client-id'  # your-TDX-client-id
-client_secret = 'your-TDX-client-secret'  # your-TDX-client-secret
+client_id = 'M11451017-d27c80f8-6baa-4e47'  # your-TDX-client-id
+client_secret = '1c4e7c99-2c88-4224-91b1-61ffac6f402d'  # your-TDX-client-secret
 
 BASE_URL = 'https://tdx.transportdata.tw/api/basic/v2'
-OPERATOR = 'TRTC'
+DEFAULT_CITY = 'Taipei'
 
-SERVICE_STATUS = {
+STOP_STATUS = {
     0: '正常',
     1: '尚未發車',
     2: '交管不停靠',
     3: '末班車已過',
     4: '今日未營運',
+}
+
+DIRECTION_LABELS = {
+    0: '去程',
+    1: '返程',
 }
 
 
@@ -69,8 +74,10 @@ def get_name_zh(name):
     return name or ''
 
 
-def get_station_name_zh(station_name):
-    return get_name_zh(station_name)
+def get_name_en(name):
+    if isinstance(name, dict):
+        return name.get('En', '')
+    return ''
 
 
 def parse_int(value, default=0):
@@ -80,9 +87,44 @@ def parse_int(value, default=0):
         return default
 
 
-def get_service_status(item):
-    status_code = parse_int(item.get('ServiceStatus'))
-    return SERVICE_STATUS.get(status_code, f'未知狀態({status_code})')
+def quote_filter(filter_text):
+    return quote(filter_text, safe="'()/$,")
+
+
+def get_station_url(city=DEFAULT_CITY):
+    return f'{BASE_URL}/Bus/Station/City/{city}?$format=JSON'
+
+
+def get_stop_url(city=DEFAULT_CITY, station_id=None):
+    query = ['$format=JSON']
+    if station_id:
+        filter_text = f"StationID eq '{station_id}'"
+        query.insert(0, f"$filter={quote_filter(filter_text)}")
+    return f'{BASE_URL}/Bus/Stop/City/{city}?{"&".join(query)}'
+
+
+def get_eta_url(city=DEFAULT_CITY, stop_uid=None, route_name=None):
+    url = f'{BASE_URL}/Bus/EstimatedTimeOfArrival/City/{city}'
+    query = ['$format=JSON', '$orderby=EstimateTime']
+
+    filters = []
+    if stop_uid:
+        filters.append(f"StopUID eq '{stop_uid}'")
+    if route_name:
+        filters.append(f"RouteName/Zh_tw eq '{route_name}'")
+    if filters:
+        query.insert(0, f"$filter={quote_filter(' and '.join(filters))}")
+
+    return f'{url}?{"&".join(query)}'
+
+
+def get_stop_status(item):
+    status_code = parse_int(item.get('StopStatus'))
+    return STOP_STATUS.get(status_code, f'未知狀態({status_code})')
+
+
+def get_direction_label(direction):
+    return DIRECTION_LABELS.get(parse_int(direction, -1), f'方向{direction}')
 
 
 def format_update_time(time_text):
@@ -96,9 +138,9 @@ def format_update_time(time_text):
 
 
 def format_estimate_time(item):
-    status_code = parse_int(item.get('ServiceStatus'))
+    status_code = parse_int(item.get('StopStatus'))
     if status_code != 0:
-        return get_service_status(item)
+        return get_stop_status(item)
 
     if item.get('EstimateTime') in (None, ''):
         return '無資料'
@@ -112,42 +154,124 @@ def format_estimate_time(item):
     return f'{math.ceil(estimate_seconds / 60)} 分'
 
 
-def get_mrt_status(item):
-    status_code = parse_int(item.get('ServiceStatus'))
+def get_arrival_status_kind(item):
+    status_code = parse_int(item.get('StopStatus'))
+    if status_code == 1:
+        return 'pending'
+    if status_code == 2:
+        return 'skipping'
+    if status_code in (3, 4):
+        return 'closed'
     if status_code != 0:
-        return get_service_status(item)
-    return format_estimate_time(item)
+        return 'muted'
+
+    estimate_seconds = parse_int(item.get('EstimateTime'), 999999)
+    if estimate_seconds <= 0:
+        return 'arriving'
+    if estimate_seconds <= 180:
+        return 'approaching'
+    return 'normal'
 
 
-def get_direction_key(item):
+def get_position(item, field_name):
+    position = item.get(field_name, {})
+    return {
+        'lat': position.get('PositionLat'),
+        'lon': position.get('PositionLon'),
+    }
+
+
+def serialize_stop(stop):
+    return {
+        'uid': stop.get('StopUID', ''),
+        'id': stop.get('StopID', ''),
+        'name_zh': get_name_zh(stop.get('StopName', '')),
+        'name_en': get_name_en(stop.get('StopName', '')),
+        'station_id': stop.get('StationID', ''),
+        'position': get_position(stop, 'StopPosition'),
+        'route_name': get_name_zh(stop.get('RouteName', '')),
+    }
+
+
+def summarize_station_stops(stops):
+    summaries = []
+    by_key = {}
+
+    for stop in stops:
+        if not isinstance(stop, dict):
+            continue
+
+        summary = serialize_stop(stop)
+        key = summary['uid'] or summary['id'] or summary['name_zh']
+        if key not in by_key:
+            summary['route_names'] = []
+            summaries.append(summary)
+            by_key[key] = summary
+
+        route_name = summary.get('route_name')
+        if route_name and route_name not in by_key[key]['route_names']:
+            by_key[key]['route_names'].append(route_name)
+
+    for summary in summaries:
+        summary['route_count'] = len(summary['route_names'])
+
+    return summaries
+
+
+def serialize_station(station):
+    stops = summarize_station_stops(station.get('Stops', []))
+    route_names = sorted({
+        get_name_zh(stop.get('RouteName', ''))
+        for stop in station.get('Stops', [])
+        if isinstance(stop, dict) and get_name_zh(stop.get('RouteName', ''))
+    })
+
+    return {
+        'uid': station.get('StationUID', ''),
+        'id': station.get('StationID', ''),
+        'name_zh': get_name_zh(station.get('StationName', '')),
+        'name_en': get_name_en(station.get('StationName', '')),
+        'address': station.get('StationAddress', ''),
+        'position': get_position(station, 'StationPosition'),
+        'stops': stops,
+        'route_names': route_names,
+        'stop_count': len(stops),
+        'route_count': len(route_names),
+    }
+
+
+def serialize_arrival(item):
+    return {
+        'route_uid': item.get('RouteUID', ''),
+        'route_id': item.get('RouteID', ''),
+        'route_name': get_name_zh(item.get('RouteName', '')),
+        'subroute_name': get_name_zh(item.get('SubRouteName', '')),
+        'direction': item.get('Direction'),
+        'direction_label': get_direction_label(item.get('Direction')),
+        'stop_uid': item.get('StopUID', ''),
+        'stop_id': item.get('StopID', ''),
+        'stop_name': get_name_zh(item.get('StopName', '')),
+        'stop_sequence': item.get('StopSequence', ''),
+        'estimate_seconds': item.get('EstimateTime'),
+        'estimate_label': format_estimate_time(item),
+        'stop_status_code': parse_int(item.get('StopStatus')),
+        'stop_status': get_stop_status(item),
+        'status_kind': get_arrival_status_kind(item),
+        'plate_number': item.get('PlateNumb', ''),
+        'next_bus_time': item.get('NextBusTime', ''),
+        'update_time': item.get('UpdateTime') or item.get('SrcUpdateTime') or '',
+    }
+
+
+def sort_arrival_item(item):
+    status_code = parse_int(item.get('StopStatus'))
+    estimate_seconds = parse_int(item.get('EstimateTime'), 999999)
     return (
-        item.get('DestinationStationID')
-        or item.get('DestinationStaionID')
-        or item.get('TripHeadSign')
-        or 'unknown'
+        status_code != 0,
+        estimate_seconds,
+        get_name_zh(item.get('RouteName', '')),
+        parse_int(item.get('Direction'), 0),
     )
-
-
-def get_direction_label(item):
-    trip_head_sign = item.get('TripHeadSign', '')
-    destination = get_name_zh(item.get('DestinationStationName', ''))
-
-    if trip_head_sign:
-        return trip_head_sign
-    if destination:
-        return f'往{destination}'
-    return '未知方向'
-
-
-def get_liveboard_url(station_id=None):
-    url = f'{BASE_URL}/Rail/Metro/LiveBoard/{OPERATOR}/'
-    query = ['$format=JSON']
-
-    if station_id:
-        filter_text = quote(f"StationID eq '{station_id}'", safe="'")
-        query.insert(0, f'$filter={filter_text}')
-
-    return f'{url}?{"&".join(query)}'
 
 
 def text_width(text):
@@ -190,88 +314,41 @@ def print_table(headers, rows):
     print(bottom)
 
 
-def sort_liveboard_item(item):
-    status_code = parse_int(item.get('ServiceStatus'))
-    estimate_seconds = parse_int(item.get('EstimateTime'), 999999)
-    return (
-        item.get('LineID', ''),
-        get_direction_key(item),
-        status_code != 0,
-        estimate_seconds,
-        get_name_zh(item.get('DestinationStationName', '')),
-    )
-
-
-def group_liveboards_by_direction(liveboards):
-    groups = []
-    by_key = {}
-
-    for item in sorted(liveboards, key=sort_liveboard_item):
-        key = get_direction_key(item)
-        if key not in by_key:
-            by_key[key] = {
-                'label': get_direction_label(item),
-                'destination': get_name_zh(item.get('DestinationStationName', '')),
-                'items': [],
-            }
-            groups.append(by_key[key])
-
-        by_key[key]['items'].append(item)
-
-    return groups
-
-
-def print_direction_table(direction_group):
-    items = direction_group['items']
-    print(f"{direction_group['label']}方向目前有{len(items)}筆資訊:")
-    print_table(
-        ['路線', '車站', '目的地', '預估到站', '服務狀態', '資料更新'],
-        [
-            [
-                get_name_zh(item.get('LineName', '')) or item.get('LineID', ''),
-                get_name_zh(item.get('StationName', '')),
-                get_name_zh(item.get('DestinationStationName', '')),
-                format_estimate_time(item),
-                get_service_status(item),
-                format_update_time(item.get('UpdateTime') or item.get('SrcUpdateTime')),
-            ]
-            for item in items
-        ],
-    )
-
-
-def print_liveboard_tables(liveboards):
-    if not liveboards:
-        print('目前沒有捷運列車即將抵達')
+def print_arrival_table(arrivals):
+    if not arrivals:
+        print('目前沒有公車到站資訊')
         return
 
-    first_item = liveboards[0]
-    station_name = get_name_zh(first_item.get('StationName', ''))
+    first_item = arrivals[0]
+    stop_name = get_name_zh(first_item.get('StopName', ''))
     update_time = format_update_time(first_item.get('UpdateTime') or first_item.get('SrcUpdateTime'))
-    direction_groups = group_liveboards_by_direction(liveboards)
 
     print(f'現在時間：{update_time}')
-    print(f'{station_name}站目前有{len(liveboards)}筆捷運電子看板資訊，共{len(direction_groups)}個方向:')
-
-    for index, direction_group in enumerate(direction_groups):
-        if index:
-            print('\n=================================\n')
-        print_direction_table(direction_group)
-
-
-def print_liveboard_table(liveboards):
-    print_liveboard_tables(liveboards)
+    print(f'{stop_name}站牌目前有{len(arrivals)}筆公車到站資訊:')
+    print_table(
+        ['路線', '方向', '站序', '預估到站', '狀態', '車牌', '資料更新'],
+        [
+            [
+                get_name_zh(item.get('RouteName', '')),
+                get_direction_label(item.get('Direction')),
+                item.get('StopSequence', ''),
+                format_estimate_time(item),
+                get_stop_status(item),
+                item.get('PlateNumb', ''),
+                format_update_time(item.get('UpdateTime') or item.get('SrcUpdateTime')),
+            ]
+            for item in sorted(arrivals, key=sort_arrival_item)
+        ],
+    )
 
 
 if __name__ == '__main__':
     tdx = TDX(client_id, client_secret)
 
-    # MRT LiveBoard endpoint:
-    # https://tdx.transportdata.tw/api/basic/v2/Rail/Metro/LiveBoard/TRTC/
-    station_id = 'BL03'
-    station_name = '土城'
+    city = DEFAULT_CITY
+    stop_uid = 'TPE11679'
 
-    url = get_liveboard_url(station_id)
+    url = get_eta_url(city, stop_uid=stop_uid)
     try:
         response = tdx.get_response(url)
     except TDXRateLimitError as exc:
@@ -281,8 +358,4 @@ if __name__ == '__main__':
         print(f'TDX API request failed: {exc}')
         exit()
 
-    if not response:
-        print(f'目前沒有捷運列車即將抵達{station_name}站')
-        exit()
-
-    print_liveboard_tables(response)
+    print_arrival_table(response)

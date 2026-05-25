@@ -1,7 +1,6 @@
 import importlib.util
 import json
 import os
-import re
 import threading
 import time
 from datetime import datetime
@@ -13,18 +12,17 @@ import requests
 
 
 ROOT = Path(__file__).resolve().parent
-PROJECT_ROOT = ROOT.parent
-STATIC_ROOT = ROOT / "static-mrt"
+STATIC_ROOT = ROOT / "static-bus"
 MAX_STATION_RESULTS = 300
 TDX_REQUEST_RETRIES = 2
 
-TDX_MODULE_PATH = "TDX-MRT_API_clients.py"
-spec = importlib.util.spec_from_file_location("tdx_api_clients", ROOT / TDX_MODULE_PATH)
+TDX_MODULE_PATH = "TDX-BUS_API_clients.py"
+spec = importlib.util.spec_from_file_location("tdx_bus_api_clients", ROOT / TDX_MODULE_PATH)
 tdx_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tdx_module)
 
 BASE_URL = tdx_module.BASE_URL
-OPERATOR = tdx_module.OPERATOR
+DEFAULT_CITY = os.getenv("TDX_BUS_CITY", tdx_module.DEFAULT_CITY)
 
 client_id = os.getenv("TDX_CLIENT_ID", tdx_module.client_id)
 client_secret = os.getenv("TDX_CLIENT_SECRET", tdx_module.client_secret)
@@ -80,43 +78,11 @@ class CachedTDX(tdx_module.TDX):
 
 tdx = CachedTDX(client_id, client_secret)
 
-stations_cache = {
-    "items": [],
-    "fetched_at": None,
-}
-
-
-def station_name_zh(station):
-    return tdx_module.get_station_name_zh(station.get("StationName", ""))
-
-
-def station_name_en(station):
-    name = station.get("StationName", "")
-    if isinstance(name, dict):
-        return name.get("En", "")
-    return ""
-
-
-def get_line_id(value):
-    if not value:
-        return ""
-    match = re.match(r"[A-Z]+", str(value))
-    return match.group(0) if match else str(value)
+station_cache = {}
 
 
 def normalize_search_text(value):
-    return value.strip().lower().replace("台", "臺")
-
-
-def get_stations():
-    if stations_cache["items"]:
-        return stations_cache["items"]
-
-    url = f"{BASE_URL}/Rail/Metro/Station/{OPERATOR}?$format=JSON"
-    stations = ensure_list_response(tdx.get_response(url), "station list")
-    stations_cache["items"] = sorted(stations, key=lambda item: item.get("StationID", ""))
-    stations_cache["fetched_at"] = datetime.now().isoformat()
-    return stations_cache["items"]
+    return str(value or "").strip().lower().replace("台", "臺")
 
 
 def ensure_list_response(data, label):
@@ -136,188 +102,131 @@ def ensure_list_response(data, label):
     raise RuntimeError(f"TDX {label} returned unexpected data: {type(data).__name__}")
 
 
-def find_stations(query):
+def get_city(params):
+    return params.get("city", [DEFAULT_CITY])[0].strip() or DEFAULT_CITY
+
+
+def get_stations(city=DEFAULT_CITY):
+    if city in station_cache:
+        return station_cache[city]["items"]
+
+    url = tdx_module.get_station_url(city)
+    stations = ensure_list_response(tdx.get_response(url), f"{city} bus station list")
+    station_cache[city] = {
+        "items": sorted(stations, key=lambda item: item.get("StationID", "")),
+        "fetched_at": datetime.now().isoformat(),
+    }
+    return station_cache[city]["items"]
+
+
+def find_stations(query, city=DEFAULT_CITY):
     query = normalize_search_text(query)
-    stations = get_stations()
+    stations = get_stations(city)
     if not query:
         return stations[:MAX_STATION_RESULTS]
 
     matches = []
     for station in stations:
-        station_id = station.get("StationID", "")
-        zh = station_name_zh(station)
-        en = station_name_en(station)
-        haystack = normalize_search_text(f"{station_id} {zh} {en}")
+        summary = tdx_module.serialize_station(station)
+        haystack = normalize_search_text(
+            " ".join([
+                summary.get("id", ""),
+                summary.get("uid", ""),
+                summary.get("name_zh", ""),
+                summary.get("name_en", ""),
+                " ".join(summary.get("route_names", [])),
+            ])
+        )
         if query in haystack:
             matches.append(station)
+
     return sorted(
         matches,
         key=lambda item: (
-            normalize_search_text(station_name_zh(item)) != query,
+            normalize_search_text(tdx_module.get_name_zh(item.get("StationName", ""))) != query,
             item.get("StationID", ""),
         ),
     )[:MAX_STATION_RESULTS]
 
 
-def get_station_summary(station):
+def get_station_by_id(station_id, city=DEFAULT_CITY):
+    for station in get_stations(city):
+        if station.get("StationID") == station_id or station.get("StationUID") == station_id:
+            return station
+    return None
+
+
+def get_stop_summaries_for_station(station, city=DEFAULT_CITY):
+    summary = tdx_module.serialize_station(station)
+    if summary["stops"]:
+        return summary["stops"]
+
     station_id = station.get("StationID", "")
+    if not station_id:
+        return []
+
+    stops = ensure_list_response(
+        tdx.get_response(tdx_module.get_stop_url(city, station_id=station_id)),
+        f"{city} bus stops for station {station_id}",
+    )
+    return [tdx_module.serialize_stop(stop) for stop in stops]
+
+
+def get_station_detail(station_id, city=DEFAULT_CITY):
+    station = get_station_by_id(station_id, city)
+    if station is None:
+        raise RuntimeError(f"Cannot find bus station {station_id} in {city}")
+
+    summary = tdx_module.serialize_station(station)
+    summary["stops"] = get_stop_summaries_for_station(station, city)
+    summary["stop_count"] = len(summary["stops"])
+    return summary
+
+
+def get_station_option(station):
+    summary = tdx_module.serialize_station(station)
     return {
-        "id": station_id,
-        "name_zh": station_name_zh(station),
-        "name_en": station_name_en(station),
-        "line_id": station.get("LineID") or station.get("LineNo") or get_line_id(station_id),
+        "uid": summary["uid"],
+        "id": summary["id"],
+        "name_zh": summary["name_zh"],
+        "name_en": summary["name_en"],
+        "address": summary["address"],
+        "position": summary["position"],
+        "route_names": summary["route_names"],
+        "stop_count": summary["stop_count"],
+        "route_count": summary["route_count"],
     }
 
 
-def get_status_kind(item):
-    status_code = tdx_module.parse_int(item.get("ServiceStatus"))
-    if status_code == 1:
-        return "pending"
-    if status_code == 2:
-        return "skipping"
-    if status_code in (3, 4):
-        return "closed"
-    if status_code != 0:
-        return "muted"
+def get_arrivals(stop_uid, city=DEFAULT_CITY, route_name=""):
+    url = tdx_module.get_eta_url(city, stop_uid=stop_uid, route_name=route_name or None)
+    arrivals = ensure_list_response(tdx.get_response(url), f"{city} bus arrivals for stop {stop_uid}")
+    arrivals = sorted(arrivals, key=tdx_module.sort_arrival_item)
+    serialized = [tdx_module.serialize_arrival(item) for item in arrivals]
+    update_time = serialized[0]["update_time"] if serialized else ""
 
-    estimate_seconds = tdx_module.parse_int(item.get("EstimateTime"))
-    if estimate_seconds <= 0:
-        return "arriving"
-    if estimate_seconds <= 180:
-        return "approaching"
-    return "normal"
-
-
-def serialize_liveboard_item(item):
-    if not isinstance(item, dict):
-        raise RuntimeError(f"TDX liveboard returned an invalid MRT liveboard item: {item!r}")
-
-    service_status_code = tdx_module.parse_int(item.get("ServiceStatus"))
-    estimate_seconds = None
-    if service_status_code == 0 and item.get("EstimateTime") not in (None, ""):
-        estimate_seconds = tdx_module.parse_int(item.get("EstimateTime"))
-
-    return {
-        "line_id": item.get("LineID") or item.get("LineNO") or "",
-        "line_name": tdx_module.get_name_zh(item.get("LineName", "")),
-        "station_id": item.get("StationID", ""),
-        "station": tdx_module.get_station_name_zh(item.get("StationName", "")),
-        "station_en": item.get("StationName", {}).get("En", "") if isinstance(item.get("StationName"), dict) else "",
-        "trip_head_sign": item.get("TripHeadSign", ""),
-        "destination_id": item.get("DestinationStationID") or item.get("DestinationStaionID") or "",
-        "destination": tdx_module.get_name_zh(item.get("DestinationStationName", "")),
-        "destination_en": item.get("DestinationStationName", {}).get("En", "") if isinstance(item.get("DestinationStationName"), dict) else "",
-        "estimate_seconds": estimate_seconds,
-        "estimate_label": tdx_module.format_estimate_time(item),
-        "service_status_code": service_status_code,
-        "service_status": tdx_module.get_service_status(item),
-        "status": tdx_module.get_mrt_status(item),
-        "status_kind": get_status_kind(item),
-        "update_time": item.get("UpdateTime") or item.get("SrcUpdateTime") or "",
-    }
-
-
-def get_direction_key(item):
-    return (
-        item.get("DestinationStationID")
-        or item.get("DestinationStaionID")
-        or item.get("TripHeadSign")
-        or "unknown"
-    )
-
-
-def get_direction_label(item):
-    trip_head_sign = item.get("TripHeadSign", "")
-    destination = tdx_module.get_name_zh(item.get("DestinationStationName", ""))
-
-    if trip_head_sign:
-        return trip_head_sign
-    if destination:
-        return f"往{destination}"
-    return "未知方向"
-
-
-def sort_liveboard_item(item):
-    service_status_code = tdx_module.parse_int(item.get("ServiceStatus"))
-    estimate_seconds = tdx_module.parse_int(item.get("EstimateTime"), 999999)
-    return (
-        item.get("LineID") or item.get("LineNO") or "",
-        get_direction_key(item),
-        service_status_code != 0,
-        estimate_seconds,
-        tdx_module.get_name_zh(item.get("DestinationStationName", "")),
-    )
-
-
-def build_direction_groups(liveboard_items):
-    groups = []
-    by_key = {}
-
-    for item in liveboard_items:
-        key = get_direction_key(item)
-        if key not in by_key:
-            by_key[key] = {
-                "key": key,
-                "line_id": item.get("LineID") or item.get("LineNO") or "",
-                "line_name": tdx_module.get_name_zh(item.get("LineName", "")),
-                "label": get_direction_label(item),
-                "destination_id": item.get("DestinationStationID") or item.get("DestinationStaionID") or "",
-                "destination": tdx_module.get_name_zh(item.get("DestinationStationName", "")),
-                "destination_en": item.get("DestinationStationName", {}).get("En", "") if isinstance(item.get("DestinationStationName"), dict) else "",
-                "items": [],
-            }
-            groups.append(by_key[key])
-
-        by_key[key]["items"].append(serialize_liveboard_item(item))
-
-    return groups
-
-
-def get_liveboard(station_id):
-    url = tdx_module.get_liveboard_url(station_id.strip())
-    liveboard_items = ensure_list_response(tdx.get_response(url), f"MRT liveboard for station {station_id}")
-    liveboard_items = sorted(liveboard_items, key=sort_liveboard_item)
-    liveboard = [serialize_liveboard_item(item) for item in liveboard_items]
-    direction_groups = build_direction_groups(liveboard_items)
-
-    station = None
-    if liveboard_items:
-        station = {
-            "StationID": liveboard_items[0].get("StationID", station_id),
-            "StationName": liveboard_items[0].get("StationName", station_id),
-        }
-    else:
-        station = next((item for item in get_stations() if item.get("StationID") == station_id), None)
-
-    update_time = ""
-    if liveboard_items:
-        update_time = liveboard_items[0].get("UpdateTime") or liveboard_items[0].get("SrcUpdateTime") or ""
-
-    normal_count = sum(1 for item in liveboard_items if tdx_module.parse_int(item.get("ServiceStatus")) == 0)
+    normal_count = sum(1 for item in arrivals if tdx_module.parse_int(item.get("StopStatus")) == 0)
     arriving_count = sum(
         1
-        for item in liveboard_items
-        if tdx_module.parse_int(item.get("ServiceStatus")) == 0
+        for item in arrivals
+        if tdx_module.parse_int(item.get("StopStatus")) == 0
         and tdx_module.parse_int(item.get("EstimateTime"), 999999) <= 180
     )
-    destination_count = len({
-        get_direction_key(item)
-        for item in liveboard_items
-    })
+    route_count = len({item["route_name"] for item in serialized if item["route_name"]})
 
     return {
-        "station": get_station_summary(station) if station else {"id": station_id, "name_zh": station_id, "name_en": ""},
+        "stop_uid": stop_uid,
+        "city": city,
+        "route_name": route_name,
         "update_time": update_time,
         "counts": {
-            "total": len(liveboard),
+            "total": len(serialized),
             "normal": normal_count,
             "arriving": arriving_count,
-            "service_issue": len(liveboard) - normal_count,
-            "destinations": destination_count,
-            "directions": len(direction_groups),
+            "service_issue": len(serialized) - normal_count,
+            "routes": route_count,
         },
-        "liveboard": liveboard,
-        "direction_groups": direction_groups,
+        "arrivals": serialized,
     }
 
 
@@ -355,24 +264,36 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
+        city = get_city(params)
 
         if parsed.path == "/api/stations":
-            params = parse_qs(parsed.query)
             query = params.get("q", [""])[0]
             try:
-                self.send_json([get_station_summary(item) for item in find_stations(query)])
+                self.send_json([get_station_option(item) for item in find_stations(query, city)])
             except Exception as exc:
                 self.send_tdx_error_json(exc)
             return
 
-        if parsed.path == "/api/liveboard":
-            params = parse_qs(parsed.query)
+        if parsed.path == "/api/station":
             station_id = params.get("station_id", [""])[0].strip()
             if not station_id:
                 self.send_error_json("station_id is required", status=400)
                 return
             try:
-                self.send_json(get_liveboard(station_id))
+                self.send_json(get_station_detail(station_id, city))
+            except Exception as exc:
+                self.send_tdx_error_json(exc)
+            return
+
+        if parsed.path == "/api/arrivals":
+            stop_uid = params.get("stop_uid", [""])[0].strip()
+            route_name = params.get("route_name", [""])[0].strip()
+            if not stop_uid:
+                self.send_error_json("stop_uid is required", status=400)
+                return
+            try:
+                self.send_json(get_arrivals(stop_uid, city, route_name))
             except Exception as exc:
                 self.send_tdx_error_json(exc)
             return
@@ -384,9 +305,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
 
 def run():
-    port = int(os.getenv("PORT", "8766"))
+    port = int(os.getenv("PORT", "8767"))
     server = ThreadingHTTPServer(("127.0.0.1", port), DashboardHandler)
-    print(f"TDX MRT dashboard prototype running at http://127.0.0.1:{port}")
+    print(f"TDX bus dashboard prototype running at http://127.0.0.1:{port}")
     server.serve_forever()
 
 

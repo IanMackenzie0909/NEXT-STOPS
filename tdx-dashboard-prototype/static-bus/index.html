@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Taipei Bus Live Board</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Taipei Bus Live Board</p>
+          <h1>公車站牌即時到站</h1>
+        </div>
+        <div class="clock">
+          <span>現在時間</span>
+          <strong id="currentTime">--:--:--</strong>
+        </div>
+      </header>
+
+      <section class="control-panel" aria-label="Bus station controls">
+        <div class="search-block">
+          <label for="stationSearch">查詢公車站</label>
+          <div class="search-row">
+            <input id="stationSearch" type="search" autocomplete="off" placeholder="輸入站名、Station ID 或路線，例如：臺北車站、307" />
+            <button id="refreshButton" type="button">更新</button>
+          </div>
+          <div id="stationResults" class="station-results" role="listbox"></div>
+        </div>
+
+        <div class="station-meta">
+          <span id="stationId">未選擇</span>
+          <strong id="stationName">選擇公車站</strong>
+          <small id="stationNameEn">Search a station</small>
+        </div>
+      </section>
+
+      <section class="stop-panel" aria-label="Stop selector">
+        <div class="panel-header">
+          <div>
+            <h2>站牌</h2>
+            <small id="stopSummary">選擇站點後顯示站牌</small>
+          </div>
+          <input id="routeFilter" type="search" autocomplete="off" placeholder="篩選路線" />
+        </div>
+        <div id="stopButtons" class="stop-buttons"></div>
+      </section>
+
+      <section class="summary-grid" aria-label="Live summary">
+        <div class="metric">
+          <span>到站資訊</span>
+          <strong id="totalCount">0</strong>
+        </div>
+        <div class="metric">
+          <span>行經路線</span>
+          <strong id="routeCount">0</strong>
+        </div>
+        <div class="metric">
+          <span>3 分內</span>
+          <strong id="arrivingCount">0</strong>
+        </div>
+        <div class="metric">
+          <span>資料更新</span>
+          <strong id="dataUpdatedAt">--:--:--</strong>
+          <small id="systemStatus">待選擇</small>
+        </div>
+      </section>
+
+      <section class="board" aria-labelledby="boardTitle">
+        <div class="board-header">
+          <div>
+            <h2 id="boardTitle">即時到站</h2>
+            <small id="selectedStopName">尚未選擇站牌</small>
+          </div>
+          <span id="boardBadge">0 筆</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>路線</th>
+                <th>方向</th>
+                <th>站序</th>
+                <th>預估到站</th>
+                <th>狀態</th>
+                <th>車牌</th>
+                <th>更新</th>
+              </tr>
+            </thead>
+            <tbody id="arrivalRows"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
