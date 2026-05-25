@@ -6,8 +6,8 @@ from datetime import datetime
 from urllib.parse import quote
 
 
-client_id = 'M11451017-d27c80f8-6baa-4e47'  # your-TDX-client-id
-client_secret = '1c4e7c99-2c88-4224-91b1-61ffac6f402d'  # your-TDX-client-secret
+client_id = 'your-TDX-client-id'  # your-TDX-client-id
+client_secret = 'your-TDX-client-secret'  # your-TDX-client-secret
 
 BASE_URL = 'https://tdx.transportdata.tw/api/basic/v2'
 DEFAULT_CITY = 'Taipei'
