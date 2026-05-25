@@ -2,7 +2,7 @@ NEXT_STOPS_Developer_Documentation.md
 .vscode/
 env/
 
-__pycache__/
+*__pycache__/
 
 *.zip
 
