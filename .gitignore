@@ -2,6 +2,8 @@ NEXT_STOPS_Developer_Documentation.md
 .vscode/
 env/
 
+__pycache__/
+
 *.zip
 
 next_stops_figma_pack/
