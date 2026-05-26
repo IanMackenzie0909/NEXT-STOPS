@@ -65,6 +65,13 @@ class AttractionHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
 
+        if parsed.path == "/api/maps-config":
+            self.send_json({
+                "api_key": os.getenv("GOOGLE_MAPS_BROWSER_KEY") or os.getenv("GOOGLE_MAPS_API_KEY") or "your_google_maps_api_key",
+                "access_token": os.getenv("MAPBOX_ACCESS_TOKEN") or "Your_Mapbox_Access_Token",
+            })
+            return
+
         if parsed.path == "/api/attractions":
             params = parse_qs(parsed.query)
             query = params.get("q", [""])[0]

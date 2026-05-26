@@ -1,4 +1,8 @@
-const TAIPEI_CENTER = { lat: 25.0478, lng: 121.5319 };
+const TAIPEI_CENTER = [121.5319, 25.0478];
+const ROUTE_SOURCE_ID = "google-route";
+const ROUTE_CASING_LAYER_ID = "google-route-casing";
+const ROUTE_LAYER_ID = "google-route-line";
+const ROUTE_DASH_LAYER_ID = "google-route-dash";
 
 const state = {
   attractions: [],
@@ -6,9 +10,6 @@ const state = {
   origin: null,
   travelMode: "TRANSIT",
   map: null,
-  geocoder: null,
-  directionsService: null,
-  directionsRenderer: null,
   originMarker: null,
   destinationMarker: null,
   searchTimer: null,
@@ -30,15 +31,6 @@ const elements = {
   routeDuration: document.querySelector("#routeDuration"),
   routeAddress: document.querySelector("#routeAddress"),
 };
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
 
 function setStatus(message) {
   elements.systemStatus.textContent = message;
@@ -62,50 +54,85 @@ function flattenAttractions(districts) {
   );
 }
 
-function resetRouteSummary() {
-  elements.routeTitle.textContent = "等待路線規劃";
-  elements.routeDistance.textContent = "--";
-  elements.routeDuration.textContent = "--";
-  elements.routeAddress.textContent = "--";
-}
-
 function formatOriginLabel(position, accuracy, sourceLabel) {
   const accuracyText = Number.isFinite(accuracy) ? `，約 ${Math.round(accuracy)}m` : "";
   return `${sourceLabel}: ${position.lat.toFixed(5)}, ${position.lng.toFixed(5)}${accuracyText}`;
 }
 
-async function loadGoogleMaps() {
-  const response = await fetch("/api/maps-config");
+function resetRouteSummary() {
+  elements.routeTitle.textContent = "等待路線規劃";
+  elements.routeDistance.textContent = "--";
+  elements.routeDuration.textContent = "--";
+  elements.routeAddress.textContent = "--";
+  clearRoute();
+}
+
+async function loadMapbox() {
+  const response = await fetch("/api/mapbox-config");
   const config = await response.json();
-  if (!response.ok) throw new Error(config.error || "Cannot load Google Maps config");
-  if (!config.api_key) {
-    throw new Error("Missing GOOGLE_MAPS_BROWSER_KEY or GOOGLE_MAPS_API_KEY");
-  }
+  if (!response.ok) throw new Error(config.error || "Cannot load Mapbox config");
+  if (!config.access_token) throw new Error("Missing MAPBOX_ACCESS_TOKEN");
 
-  await new Promise((resolve, reject) => {
-    window.initGoogleRoutePlanner = resolve;
-    const script = document.createElement("script");
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(config.api_key)}&callback=initGoogleRoutePlanner`;
-    script.async = true;
-    script.defer = true;
-    script.onerror = () => reject(new Error("Google Maps JavaScript API failed to load"));
-    document.head.append(script);
-  });
-
-  state.map = new google.maps.Map(document.querySelector("#map"), {
+  mapboxgl.accessToken = config.access_token;
+  state.map = new mapboxgl.Map({
+    container: "map",
+    style: "mapbox://styles/mapbox/standard",
     center: TAIPEI_CENTER,
-    zoom: 13,
-    mapTypeControl: false,
-    streetViewControl: false,
-    fullscreenControl: true,
+    zoom: 13.2,
+    pitch: 62,
+    bearing: 28,
+    antialias: true,
+    cooperativeGestures: true,
   });
-  state.geocoder = new google.maps.Geocoder();
-  state.directionsService = new google.maps.DirectionsService();
-  state.directionsRenderer = new google.maps.DirectionsRenderer({
-    map: state.map,
-    suppressMarkers: true,
-    preserveViewport: false,
+  state.map.addControl(new mapboxgl.NavigationControl({ visualizePitch: true }), "top-right");
+  state.map.addControl(new mapboxgl.FullscreenControl(), "top-right");
+
+  await new Promise((resolve) => state.map.on("load", resolve));
+  applyMapAppearance();
+}
+
+function applyMapAppearance() {
+  state.map.setConfigProperty("basemap", "lightPreset", "dusk");
+  state.map.setConfigProperty("basemap", "showPointOfInterestLabels", true);
+  state.map.setConfigProperty("basemap", "showRoadLabels", false);
+  state.map.setConfigProperty("basemap", "showTransitLabels", true);
+  state.map.setFog({
+    color: "#111716",
+    "high-color": "#20372f",
+    "space-color": "#090d0d",
+    "horizon-blend": 0.22,
   });
+
+  const layers = state.map.getStyle().layers || [];
+  const labelLayer = layers.find((layer) => layer.type === "symbol" && layer.layout?.["text-field"]);
+  state.map.addLayer(
+    {
+      id: "soft-3d-buildings",
+      source: "composite",
+      "source-layer": "building",
+      filter: ["==", ["get", "extrude"], "true"],
+      type: "fill-extrusion",
+      minzoom: 14,
+      paint: {
+        "fill-extrusion-color": "#273832",
+        "fill-extrusion-height": ["interpolate", ["linear"], ["zoom"], 14, 0, 16, ["get", "height"]],
+        "fill-extrusion-base": ["interpolate", ["linear"], ["zoom"], 14, 0, 16, ["get", "min_height"]],
+        "fill-extrusion-opacity": 0.72,
+      },
+    },
+    labelLayer?.id
+  );
+
+  state.map.addLayer(
+    {
+      id: "taipei-route-atmosphere",
+      type: "background",
+      paint: {
+        "background-color": "rgba(10, 14, 14, 0.18)",
+      },
+    },
+    layers[0]?.id
+  );
 }
 
 async function loadAttractions({ refresh = false } = {}) {
@@ -146,10 +173,6 @@ function renderAttractions() {
   elements.attractionSelect.append(placeholder);
   elements.attractionSelect.disabled = !state.attractions.length;
 
-  if (!state.attractions.length) {
-    return;
-  }
-
   for (const attraction of state.attractions) {
     const option = document.createElement("option");
     option.value = attraction.id;
@@ -177,24 +200,24 @@ function setOrigin(position, accuracy, sourceLabel) {
 function setOriginMarker() {
   if (!state.origin || !state.map) return;
 
+  const lngLat = [state.origin.lng, state.origin.lat];
   if (!state.originMarker) {
-    state.originMarker = new google.maps.Marker({
-      map: state.map,
-      label: "你",
-      title: "目前位置",
+    state.originMarker = new mapboxgl.Marker({
+      element: createMarkerElement("origin"),
       draggable: true,
+      anchor: "bottom",
+    })
+      .setLngLat(lngLat)
+      .setPopup(new mapboxgl.Popup().setText("目前位置"))
+      .addTo(state.map);
+    state.originMarker.on("dragend", () => {
+      const position = state.originMarker.getLngLat();
+      setOrigin({ lat: position.lat, lng: position.lng }, null, "手動修正");
     });
-    state.originMarker.addListener("dragend", () => {
-      const position = state.originMarker.getPosition();
-      setOrigin(
-        { lat: position.lat(), lng: position.lng() },
-        null,
-        "手動修正"
-      );
-    });
+  } else {
+    state.originMarker.setLngLat(lngLat);
   }
-  state.originMarker.setPosition(state.origin);
-  state.map.panTo(state.origin);
+  state.map.easeTo({ center: lngLat, zoom: Math.max(state.map.getZoom(), 14) });
 }
 
 function locateUser() {
@@ -207,12 +230,11 @@ function locateUser() {
   let bestPosition = null;
   let watchId = null;
   let finished = false;
+
   const finish = () => {
     if (finished) return;
     finished = true;
-    if (watchId !== null) {
-      navigator.geolocation.clearWatch(watchId);
-    }
+    if (watchId !== null) navigator.geolocation.clearWatch(watchId);
     if (!bestPosition) {
       setStatus("定位失敗");
       return;
@@ -230,19 +252,11 @@ function locateUser() {
         },
         accuracy: position.coords.accuracy,
       };
-
       if (!bestPosition || candidate.accuracy < bestPosition.accuracy) {
         bestPosition = candidate;
-        elements.originLabel.textContent = formatOriginLabel(
-          candidate.position,
-          candidate.accuracy,
-          "定位中"
-        );
+        elements.originLabel.textContent = formatOriginLabel(candidate.position, candidate.accuracy, "定位中");
       }
-
-      if (candidate.accuracy <= 50) {
-        finish();
-      }
+      if (candidate.accuracy <= 50) finish();
     },
     (error) => {
       setStatus("定位失敗");
@@ -261,39 +275,110 @@ function locateUser() {
 function setOriginFromMapCenter() {
   if (!state.map) return;
   const center = state.map.getCenter();
-  setOrigin(
-    {
-      lat: center.lat(),
-      lng: center.lng(),
-    },
-    null,
-    "地圖中心"
-  );
+  setOrigin({ lat: center.lat, lng: center.lng }, null, "地圖中心");
   setStatus("已設定出發點");
 }
 
-function setDestinationMarker(location, title) {
+function setDestinationMarker(destination) {
+  const lngLat = [destination.lng, destination.lat];
   if (!state.destinationMarker) {
-    state.destinationMarker = new google.maps.Marker({
-      map: state.map,
-      label: "終",
-    });
+    state.destinationMarker = new mapboxgl.Marker({
+      element: createMarkerElement("destination"),
+      anchor: "bottom",
+    })
+      .setLngLat(lngLat)
+      .setPopup(new mapboxgl.Popup().setText("目的地"))
+      .addTo(state.map);
+  } else {
+    state.destinationMarker.setLngLat(lngLat);
   }
-  state.destinationMarker.setPosition(location);
-  state.destinationMarker.setTitle(title);
 }
 
-async function geocodeDestination(attraction) {
-  const response = await state.geocoder.geocode({
-    address: attraction.query,
-    region: "TW",
+function createMarkerElement(kind) {
+  const marker = document.createElement("div");
+  marker.className = `route-marker ${kind}`;
+  marker.innerHTML = `<span>${kind === "origin" ? "你" : "終"}</span>`;
+  return marker;
+}
+
+function clearRoute() {
+  if (!state.map?.isStyleLoaded()) return;
+  if (state.map.getLayer(ROUTE_DASH_LAYER_ID)) state.map.removeLayer(ROUTE_DASH_LAYER_ID);
+  if (state.map.getLayer(ROUTE_LAYER_ID)) state.map.removeLayer(ROUTE_LAYER_ID);
+  if (state.map.getLayer(ROUTE_CASING_LAYER_ID)) state.map.removeLayer(ROUTE_CASING_LAYER_ID);
+  if (state.map.getSource(ROUTE_SOURCE_ID)) state.map.removeSource(ROUTE_SOURCE_ID);
+}
+
+function renderRoute(route) {
+  clearRoute();
+  state.map.addSource(ROUTE_SOURCE_ID, {
+    type: "geojson",
+    data: {
+      type: "Feature",
+      properties: {},
+      geometry: route.geometry,
+    },
+  });
+  state.map.addLayer({
+    id: ROUTE_CASING_LAYER_ID,
+    type: "line",
+    source: ROUTE_SOURCE_ID,
+    layout: {
+      "line-cap": "round",
+      "line-join": "round",
+    },
+    paint: {
+      "line-color": "#0d1110",
+      "line-width": ["interpolate", ["linear"], ["zoom"], 10, 10, 16, 17],
+      "line-opacity": 0.8,
+    },
+  });
+  state.map.addLayer({
+    id: ROUTE_LAYER_ID,
+    type: "line",
+    source: ROUTE_SOURCE_ID,
+    layout: {
+      "line-cap": "round",
+      "line-join": "round",
+    },
+    paint: {
+      "line-color": "#39f0b2",
+      "line-width": ["interpolate", ["linear"], ["zoom"], 10, 5, 16, 10],
+      "line-opacity": 0.95,
+    },
+  });
+  state.map.addLayer({
+    id: ROUTE_DASH_LAYER_ID,
+    type: "line",
+    source: ROUTE_SOURCE_ID,
+    layout: {
+      "line-cap": "round",
+      "line-join": "round",
+    },
+    paint: {
+      "line-color": "#fff2a8",
+      "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1.8, 16, 3.6],
+      "line-dasharray": [0.2, 2.8],
+      "line-opacity": 0.95,
+    },
   });
 
-  if (!response.results.length) {
-    throw new Error(`Cannot geocode ${attraction.name}`);
-  }
-
-  return response.results[0];
+  setDestinationMarker(route.destination);
+  const bounds = new mapboxgl.LngLatBounds();
+  for (const coordinate of route.geometry.coordinates) bounds.extend(coordinate);
+  bounds.extend([route.origin.lng, route.origin.lat]);
+  bounds.extend([route.destination.lng, route.destination.lat]);
+  state.map.fitBounds(bounds, {
+    padding: {
+      top: 90,
+      bottom: 170,
+      left: 90,
+      right: 90,
+    },
+    maxZoom: 16,
+    pitch: 62,
+    bearing: 28,
+  });
 }
 
 async function planRoute() {
@@ -303,27 +388,27 @@ async function planRoute() {
     return;
   }
 
-  setStatus("規劃路線中");
+  setStatus("Google 後端規劃中");
   try {
-    const destinationResult = await geocodeDestination(state.selectedAttraction);
-    const destinationLocation = destinationResult.geometry.location;
-    setDestinationMarker(destinationLocation, state.selectedAttraction.name);
-
-    const result = await state.directionsService.route({
-      origin: state.origin,
-      destination: destinationLocation,
-      travelMode: google.maps.TravelMode[state.travelMode],
-      region: "TW",
-      provideRouteAlternatives: false,
+    const response = await fetch("/api/route", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        origin: state.origin,
+        destination_query: state.selectedAttraction.query,
+        mode: state.travelMode,
+      }),
     });
+    const route = await response.json();
+    if (!response.ok) throw new Error(route.error || "Cannot calculate route");
 
-    state.directionsRenderer.setDirections(result);
-    const route = result.routes[0];
-    const leg = route.legs[0];
+    renderRoute(route);
     elements.routeTitle.textContent = route.summary || state.selectedAttraction.name;
-    elements.routeDistance.textContent = leg.distance?.text || "--";
-    elements.routeDuration.textContent = leg.duration?.text || "--";
-    elements.routeAddress.textContent = leg.end_address || destinationResult.formatted_address;
+    elements.routeDistance.textContent = route.distance_text || "--";
+    elements.routeDuration.textContent = route.duration_text || "--";
+    elements.routeAddress.textContent = route.destination.address || "--";
     setStatus("路線完成");
   } catch (error) {
     setStatus("路線失敗");
@@ -364,7 +449,7 @@ elements.attractionSelect.addEventListener("change", () => {
 (async function init() {
   setLoading(true);
   try {
-    await loadGoogleMaps();
+    await loadMapbox();
     await loadAttractions();
     setStatus("請取得位置");
   } catch (error) {
