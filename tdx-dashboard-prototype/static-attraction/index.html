@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Taipei Official Attractions</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero" aria-label="Taipei attractions">
+        <div class="hero-copy">
+          <p class="eyebrow">Taipei Open Data</p>
+          <h1>臺北市官方景點</h1>
+        </div>
+        <div class="hero-art" aria-hidden="true">
+          <div class="tower"></div>
+          <div class="ridge ridge-one"></div>
+          <div class="ridge ridge-two"></div>
+          <div class="sun"></div>
+        </div>
+      </section>
+
+      <section class="toolbar" aria-label="Attraction controls">
+        <div class="search-block">
+          <label for="searchInput">搜尋行政區、主題或景點</label>
+          <div class="search-row">
+            <input id="searchInput" type="search" autocomplete="off" placeholder="例如：北投、夜市、台北101" />
+            <button id="refreshButton" type="button">更新</button>
+          </div>
+        </div>
+        <div class="status-block">
+          <span>資料狀態</span>
+          <strong id="systemStatus">載入中</strong>
+        </div>
+      </section>
+
+      <section class="summary-grid" aria-label="Attraction summary">
+        <div class="metric">
+          <span>行政區資料</span>
+          <strong id="districtCount">0</strong>
+        </div>
+        <div class="metric">
+          <span>精選景點</span>
+          <strong id="attractionCount">0</strong>
+        </div>
+        <div class="metric">
+          <span>主題類型</span>
+          <strong id="themeCount">0</strong>
+        </div>
+        <div class="metric">
+          <span>匯入時間</span>
+          <strong id="latestImport">--</strong>
+        </div>
+      </section>
+
+      <section class="content-grid">
+        <aside class="district-panel" aria-label="District list">
+          <div class="panel-header">
+            <h2>行政區</h2>
+            <small id="resultCount">0 筆</small>
+          </div>
+          <div id="districtList" class="district-list"></div>
+        </aside>
+
+        <section class="detail-panel" aria-labelledby="detailTitle">
+          <div class="detail-header">
+            <div>
+              <p id="detailTheme" class="detail-theme">選擇行政區</p>
+              <h2 id="detailTitle">臺北景點資料</h2>
+            </div>
+            <span id="detailCount">0 景點</span>
+          </div>
+          <div id="attractionList" class="attraction-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
