@@ -67,8 +67,7 @@ class AttractionHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/maps-config":
             self.send_json({
-                "api_key": os.getenv("GOOGLE_MAPS_BROWSER_KEY") or os.getenv("GOOGLE_MAPS_API_KEY") or "your_google_maps_api_key",
-                "access_token": os.getenv("MAPBOX_ACCESS_TOKEN") or "Your_Mapbox_Access_Token",
+                "api_key": os.getenv("GOOGLE_MAPS_BROWSER_KEY") or os.getenv("GOOGLE_MAPS_API_KEY") or "your_google_maps_api_key", # Replace with your Google Maps Platform API key.
             })
             return
 

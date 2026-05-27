@@ -1,17 +1,37 @@
 :root {
+  color-scheme: light;
+  --bg: #eef2ef;
+  --surface: rgba(255, 253, 248, 0.92);
+  --surface-solid: #fffdf8;
+  --surface-2: #edf2ec;
+  --surface-3: #f8f5ec;
+  --ink: #18231f;
+  --muted: #667269;
+  --line: #d5ddd5;
+  --accent: #237b5c;
+  --accent-dark: #14563f;
+  --gold: #b7832d;
+  --control-ink: #f8fbf7;
+  --shadow: 0 24px 70px rgba(45, 60, 50, 0.18);
+  --panel-shadow: 0 20px 48px rgba(37, 50, 43, 0.22);
+}
+
+[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #090d0d;
-  --surface: #111816;
-  --surface-2: #1b2521;
-  --surface-3: #0d1312;
+  --bg: #101716;
+  --surface: rgba(20, 29, 26, 0.9);
+  --surface-solid: #141d1a;
+  --surface-2: #202d29;
+  --surface-3: #121c19;
   --ink: #f4f1df;
-  --muted: #9ba79e;
-  --line: #293832;
-  --mint: #39f0b2;
-  --mint-dark: #1ba678;
-  --gold: #fff2a8;
-  --amber: #db9f3d;
-  --shadow: 0 24px 70px rgba(0, 0, 0, 0.46);
+  --muted: #a8b4ab;
+  --line: #31423b;
+  --accent: #39d8a3;
+  --accent-dark: #1ba678;
+  --gold: #e9c769;
+  --control-ink: #07100d;
+  --shadow: 0 24px 70px rgba(0, 0, 0, 0.42);
+  --panel-shadow: 0 24px 64px rgba(0, 0, 0, 0.38);
 }
 
 * {
@@ -26,10 +46,18 @@ body {
 body {
   margin: 0;
   background:
-    radial-gradient(circle at 12% 10%, rgba(57, 240, 178, 0.18), transparent 26%),
-    linear-gradient(135deg, #090d0d 0%, #111816 58%, #17130c 100%);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.42), transparent 38%),
+    var(--bg);
   color: var(--ink);
   font-family: Inter, "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", Arial, sans-serif;
+  transition: background-color 180ms ease, color 180ms ease;
+}
+
+[data-theme="dark"] body,
+body[data-theme="dark"] {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 38%),
+    var(--bg);
 }
 
 button,
@@ -44,9 +72,10 @@ select {
 }
 
 .workspace {
+  position: relative;
   height: calc(100dvh - 28px);
   display: grid;
-  grid-template-columns: 390px minmax(0, 1fr);
+  grid-template-columns: 380px minmax(0, 1fr);
   gap: 14px;
 }
 
@@ -57,8 +86,12 @@ select {
 .route-card {
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(17, 24, 22, 0.88);
+  background: var(--surface);
   box-shadow: var(--shadow);
+}
+
+.panel-bookmark {
+  display: none;
 }
 
 .planner-panel {
@@ -70,7 +103,7 @@ select {
   overflow: auto;
   padding: 14px;
   backdrop-filter: blur(18px);
-  scrollbar-color: #3d5a4d transparent;
+  scrollbar-color: var(--accent) transparent;
 }
 
 .panel-top {
@@ -79,7 +112,7 @@ select {
 
 .eyebrow {
   margin: 0 0 6px;
-  color: var(--mint);
+  color: var(--accent);
   font-size: 12px;
   font-weight: 900;
   letter-spacing: 0;
@@ -94,6 +127,7 @@ p {
 }
 
 h1 {
+  max-width: 13ch;
   font-size: 30px;
   line-height: 1.05;
 }
@@ -115,8 +149,8 @@ h2 {
 
 .status-card {
   background:
-    linear-gradient(135deg, rgba(57, 240, 178, 0.16), rgba(255, 242, 168, 0.08)),
-    rgba(17, 24, 22, 0.92);
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, transparent), color-mix(in srgb, var(--gold) 12%, transparent)),
+    var(--surface);
 }
 
 .status-card span,
@@ -132,7 +166,7 @@ dt {
 .status-card strong {
   display: block;
   margin-top: 6px;
-  color: var(--mint);
+  color: var(--accent);
   font-size: 24px;
 }
 
@@ -160,21 +194,21 @@ select {
 }
 
 input::placeholder {
-  color: #67766e;
+  color: var(--muted);
 }
 
 input:focus,
 select:focus {
-  border-color: var(--mint);
-  box-shadow: 0 0 0 3px rgba(57, 240, 178, 0.17);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
 button {
   min-height: 42px;
   border: 0;
   border-radius: 8px;
-  background: linear-gradient(180deg, var(--mint), var(--mint-dark));
-  color: #07100d;
+  background: linear-gradient(180deg, var(--accent), var(--accent-dark));
+  color: var(--control-ink);
   cursor: pointer;
   font-weight: 900;
 }
@@ -193,7 +227,8 @@ button:disabled {
 }
 
 .location-grid,
-.mode-grid {
+.mode-grid,
+.theme-grid {
   display: grid;
   gap: 8px;
 }
@@ -206,15 +241,21 @@ button:disabled {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-.mode-button {
+.theme-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.mode-button,
+.theme-button {
   background: var(--surface-2);
   color: var(--ink);
   box-shadow: none;
 }
 
-.mode-button.is-active {
-  background: linear-gradient(180deg, var(--mint), var(--mint-dark));
-  color: #07100d;
+.mode-button.is-active,
+.theme-button.is-active {
+  background: linear-gradient(180deg, var(--accent), var(--accent-dark));
+  color: var(--control-ink);
 }
 
 .map-panel {
@@ -223,7 +264,11 @@ button:disabled {
   min-height: 0;
   height: 100%;
   overflow: hidden;
-  background: #0b1010;
+  background: #dce6de;
+}
+
+[data-theme="dark"] .map-panel {
+  background: #111a18;
 }
 
 .map {
@@ -237,8 +282,14 @@ button:disabled {
   inset: 0;
   pointer-events: none;
   background:
-    linear-gradient(90deg, rgba(9, 13, 13, 0.62), transparent 22%, transparent 70%, rgba(9, 13, 13, 0.42)),
-    linear-gradient(180deg, rgba(9, 13, 13, 0.36), transparent 34%, transparent 70%, rgba(9, 13, 13, 0.5));
+    linear-gradient(90deg, color-mix(in srgb, var(--bg) 34%, transparent), transparent 22%, transparent 74%, color-mix(in srgb, var(--bg) 22%, transparent)),
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-solid) 16%, transparent), transparent 26%, transparent 72%, color-mix(in srgb, var(--bg) 20%, transparent));
+}
+
+[data-theme="dark"] .map::after {
+  background:
+    linear-gradient(90deg, rgba(16, 23, 22, 0.36), transparent 24%, transparent 74%, rgba(16, 23, 22, 0.28)),
+    linear-gradient(180deg, rgba(16, 23, 22, 0.22), transparent 30%, transparent 72%, rgba(16, 23, 22, 0.35));
 }
 
 .map-crosshair {
@@ -256,9 +307,9 @@ button:disabled {
 .map-crosshair::after {
   content: "";
   position: absolute;
-  background: rgba(255, 242, 168, 0.85);
+  background: var(--gold);
   border-radius: 999px;
-  box-shadow: 0 0 16px rgba(255, 242, 168, 0.55);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--gold) 45%, transparent);
 }
 
 .map-crosshair::before {
@@ -280,13 +331,31 @@ button:disabled {
   left: 18px;
   right: 18px;
   bottom: 18px;
-  z-index: 2;
+  z-index: 3;
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(0, 2fr);
   gap: 16px;
-  padding: 16px;
-  background: rgba(17, 24, 22, 0.9);
+  padding: 18px 16px 16px;
+  background: var(--surface);
   backdrop-filter: blur(18px);
+  transition: transform 220ms ease;
+}
+
+.route-card.is-collapsed {
+  transform: translateY(calc(100% - 42px));
+}
+
+.route-toggle {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  min-height: 32px;
+  width: min(168px, 50vw);
+  transform: translate(-50%, -50%);
+  border: 1px solid var(--line);
+  background: var(--surface-solid);
+  color: var(--ink);
+  box-shadow: var(--panel-shadow);
 }
 
 .route-card p {
@@ -308,7 +377,9 @@ dl {
 }
 
 dd {
+  min-width: 0;
   margin: 5px 0 0;
+  overflow-wrap: anywhere;
   font-weight: 900;
 }
 
@@ -318,9 +389,9 @@ dd {
   height: 42px;
   display: grid;
   place-items: center;
-  border: 3px solid rgba(244, 241, 223, 0.9);
+  border: 3px solid color-mix(in srgb, var(--surface-solid) 90%, transparent);
   border-radius: 50% 50% 50% 8px;
-  box-shadow: 0 0 0 8px rgba(57, 240, 178, 0.12), 0 18px 36px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 13%, transparent), 0 18px 36px rgba(0, 0, 0, 0.28);
   transform: rotate(-45deg);
 }
 
@@ -329,75 +400,105 @@ dd {
   place-items: center;
   width: 24px;
   height: 24px;
-  color: #07100d;
+  color: var(--control-ink);
   font-size: 12px;
   font-weight: 900;
   transform: rotate(45deg);
 }
 
 .route-marker.origin {
-  background: var(--mint);
+  background: var(--accent);
 }
 
 .route-marker.destination {
   background: var(--gold);
 }
 
+.route-marker.destination span {
+  color: #18231f;
+}
+
 .mapboxgl-popup-content {
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(17, 24, 22, 0.94);
+  background: var(--surface-solid);
   color: var(--ink);
   font-family: Inter, "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", Arial, sans-serif;
   font-weight: 800;
+  box-shadow: var(--panel-shadow);
 }
 
 .mapboxgl-popup-tip {
-  border-top-color: rgba(17, 24, 22, 0.94);
+  border-top-color: var(--surface-solid);
 }
 
 .mapboxgl-ctrl-group {
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(17, 24, 22, 0.92);
-  box-shadow: var(--shadow);
+  background: var(--surface-solid);
+  box-shadow: var(--panel-shadow);
 }
 
 .mapboxgl-ctrl button {
   min-height: 29px;
   border-radius: 0;
-  background: rgba(17, 24, 22, 0.92);
+  background: var(--surface-solid);
 }
 
-.mapboxgl-ctrl button span {
+[data-theme="dark"] .mapboxgl-ctrl button span {
   filter: invert(1);
 }
 
 @media (max-width: 980px) {
-  .workspace {
-    height: auto;
-    grid-template-columns: 1fr;
-  }
-
-  .planner-panel {
-    max-height: none;
-  }
-
-  .map-panel {
-    height: clamp(380px, 58dvh, 620px);
-  }
-}
-
-@media (max-width: 680px) {
   .app-shell {
     padding: 10px;
   }
 
   .workspace {
-    min-height: calc(100dvh - 20px);
+    height: calc(100dvh - 20px);
+    grid-template-columns: 1fr;
+    gap: 0;
   }
 
+  .panel-bookmark {
+    position: fixed;
+    left: 10px;
+    top: 10px;
+    z-index: 35;
+    display: block;
+    min-height: 38px;
+    min-width: 70px;
+    padding: 0 14px;
+    border: 1px solid var(--line);
+    background: var(--surface-solid);
+    color: var(--ink);
+    box-shadow: var(--panel-shadow);
+  }
+
+  .planner-panel {
+    position: fixed;
+    left: 10px;
+    right: 10px;
+    top: 56px;
+    z-index: 30;
+    max-height: min(74dvh, 680px);
+    transform-origin: top center;
+    transition: transform 220ms ease, opacity 220ms ease;
+  }
+
+  body.controls-collapsed .planner-panel {
+    transform: translateY(calc(-100% - 68px));
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .map-panel {
+    height: calc(100dvh - 20px);
+  }
+}
+
+@media (max-width: 680px) {
   .search-row,
   .location-grid,
   .route-card,
@@ -407,5 +508,17 @@ dd {
 
   .mode-grid {
     grid-template-columns: 1fr;
+  }
+
+  .route-card {
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+    gap: 10px;
+    padding: 18px 12px 12px;
+  }
+
+  .route-card h2 {
+    font-size: 19px;
   }
 }

@@ -14,7 +14,7 @@ CLIENT_MODULE_PATH = "Attraction_OpenAPI-clients.py"
 
 GOOGLE_GEOCODING_URL = "https://maps.googleapis.com/maps/api/geocode/json"
 GOOGLE_DIRECTIONS_URL = "https://maps.googleapis.com/maps/api/directions/json"
-DEFAULT_MAPBOX_TOKEN = "Your_Mapbox_Access_Token"  # Replace with your Mapbox token or set MAPBOX_ACCESS_TOKEN env variable
+DEFAULT_MAPBOX_TOKEN = "your_mapbox_access_token"  # Replace with your Mapbox token or set MAPBOX_ACCESS_TOKEN env variable
 
 TRAVEL_MODES = {
     "TRANSIT": "transit",
@@ -41,7 +41,7 @@ def get_google_key():
         os.getenv("GOOGLE_MAPS_SERVER_KEY")
         or os.getenv("GOOGLE_MAPS_API_KEY")
         or os.getenv("GOOGLE_MAPS_BROWSER_KEY")
-        or "your_google_maps_api_key"  # Replace with your Google Maps API key or set env variable
+        or "your_google_maps_api_key"  # Replace with your Google Maps Platform API key.
     )
 
 

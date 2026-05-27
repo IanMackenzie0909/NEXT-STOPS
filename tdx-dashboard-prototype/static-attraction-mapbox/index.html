@@ -8,9 +8,10 @@
     <link href="https://api.mapbox.com/mapbox-gl-js/v3.14.0/mapbox-gl.css" rel="stylesheet" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body>
+  <body data-theme="light">
     <main class="app-shell">
       <section class="workspace">
+        <button id="panelToggle" class="panel-bookmark" type="button">設定</button>
         <aside class="planner-panel" aria-label="Route planner controls">
           <header class="panel-top">
             <p class="eyebrow">Mapbox Frontend + Google Backend</p>
@@ -21,6 +22,17 @@
           <section class="status-card">
             <span>系統狀態</span>
             <strong id="systemStatus">載入中</strong>
+          </section>
+
+          <section class="control-card">
+            <div class="section-title">
+              <h2>地圖外觀</h2>
+              <small id="themeLabel">Light</small>
+            </div>
+            <div class="theme-grid" role="group" aria-label="Map appearance">
+              <button class="theme-button is-active" type="button" data-theme="light">Light</button>
+              <button class="theme-button" type="button" data-theme="dark">Dark</button>
+            </div>
           </section>
 
           <section class="control-card">
@@ -69,6 +81,7 @@
           <div id="map" class="map"></div>
           <div class="map-crosshair" aria-hidden="true"></div>
           <aside class="route-card">
+            <button id="routeCardToggle" class="route-toggle" type="button">路線資訊</button>
             <div>
               <p id="selectedDestination">尚未選擇目的地</p>
               <h2 id="routeTitle">等待路線規劃</h2>

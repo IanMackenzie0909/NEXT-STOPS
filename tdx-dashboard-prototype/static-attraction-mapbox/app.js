@@ -9,6 +9,7 @@ const state = {
   selectedAttraction: null,
   origin: null,
   travelMode: "TRANSIT",
+  theme: "light",
   map: null,
   originMarker: null,
   destinationMarker: null,
@@ -16,15 +17,20 @@ const state = {
 };
 
 const elements = {
+  panelToggle: document.querySelector("#panelToggle"),
   systemStatus: document.querySelector("#systemStatus"),
   searchInput: document.querySelector("#searchInput"),
   refreshButton: document.querySelector("#refreshButton"),
   locateButton: document.querySelector("#locateButton"),
   setMapCenterButton: document.querySelector("#setMapCenterButton"),
   originLabel: document.querySelector("#originLabel"),
+  themeLabel: document.querySelector("#themeLabel"),
+  themeButtons: document.querySelectorAll(".theme-button"),
   travelModeLabel: document.querySelector("#travelModeLabel"),
   resultCount: document.querySelector("#resultCount"),
   attractionSelect: document.querySelector("#attractionSelect"),
+  routeCard: document.querySelector(".route-card"),
+  routeCardToggle: document.querySelector("#routeCardToggle"),
   selectedDestination: document.querySelector("#selectedDestination"),
   routeTitle: document.querySelector("#routeTitle"),
   routeDistance: document.querySelector("#routeDistance"),
@@ -92,47 +98,94 @@ async function loadMapbox() {
 }
 
 function applyMapAppearance() {
-  state.map.setConfigProperty("basemap", "lightPreset", "dusk");
+  const dark = state.theme === "dark";
+  state.map.setConfigProperty("basemap", "lightPreset", dark ? "dusk" : "day");
   state.map.setConfigProperty("basemap", "showPointOfInterestLabels", true);
-  state.map.setConfigProperty("basemap", "showRoadLabels", false);
+  state.map.setConfigProperty("basemap", "showRoadLabels", true);
   state.map.setConfigProperty("basemap", "showTransitLabels", true);
   state.map.setFog({
-    color: "#111716",
-    "high-color": "#20372f",
-    "space-color": "#090d0d",
-    "horizon-blend": 0.22,
+    color: dark ? "#172522" : "#eef4f0",
+    "high-color": dark ? "#385348" : "#cde6dc",
+    "space-color": dark ? "#101716" : "#f8fbf6",
+    "horizon-blend": dark ? 0.2 : 0.08,
   });
 
   const layers = state.map.getStyle().layers || [];
   const labelLayer = layers.find((layer) => layer.type === "symbol" && layer.layout?.["text-field"]);
-  state.map.addLayer(
-    {
-      id: "soft-3d-buildings",
-      source: "composite",
-      "source-layer": "building",
-      filter: ["==", ["get", "extrude"], "true"],
-      type: "fill-extrusion",
-      minzoom: 14,
-      paint: {
-        "fill-extrusion-color": "#273832",
-        "fill-extrusion-height": ["interpolate", ["linear"], ["zoom"], 14, 0, 16, ["get", "height"]],
-        "fill-extrusion-base": ["interpolate", ["linear"], ["zoom"], 14, 0, 16, ["get", "min_height"]],
-        "fill-extrusion-opacity": 0.72,
-      },
-    },
-    labelLayer?.id
-  );
 
-  state.map.addLayer(
-    {
-      id: "taipei-route-atmosphere",
-      type: "background",
-      paint: {
-        "background-color": "rgba(10, 14, 14, 0.18)",
+  if (!state.map.getLayer("soft-3d-buildings")) {
+    state.map.addLayer(
+      {
+        id: "soft-3d-buildings",
+        source: "composite",
+        "source-layer": "building",
+        filter: ["==", ["get", "extrude"], "true"],
+        type: "fill-extrusion",
+        minzoom: 14,
+        paint: {
+          "fill-extrusion-height": ["interpolate", ["linear"], ["zoom"], 14, 0, 16, ["get", "height"]],
+          "fill-extrusion-base": ["interpolate", ["linear"], ["zoom"], 14, 0, 16, ["get", "min_height"]],
+        },
       },
-    },
-    layers[0]?.id
-  );
+      labelLayer?.id
+    );
+  }
+
+  state.map.setPaintProperty("soft-3d-buildings", "fill-extrusion-color", dark ? "#30453d" : "#d7ded8");
+  state.map.setPaintProperty("soft-3d-buildings", "fill-extrusion-opacity", dark ? 0.62 : 0.42);
+  updateRouteAppearance();
+}
+
+function getRoutePaint() {
+  if (state.theme === "dark") {
+    return {
+      casing: "#0f1715",
+      route: "#39d8a3",
+      dash: "#e9c769",
+    };
+  }
+
+  return {
+    casing: "#fffdf8",
+    route: "#237b5c",
+    dash: "#b7832d",
+  };
+}
+
+function updateRouteAppearance() {
+  if (!state.map?.isStyleLoaded()) return;
+  const colors = getRoutePaint();
+  if (state.map.getLayer(ROUTE_CASING_LAYER_ID)) {
+    state.map.setPaintProperty(ROUTE_CASING_LAYER_ID, "line-color", colors.casing);
+    state.map.setPaintProperty(ROUTE_CASING_LAYER_ID, "line-opacity", state.theme === "dark" ? 0.85 : 0.94);
+  }
+  if (state.map.getLayer(ROUTE_LAYER_ID)) {
+    state.map.setPaintProperty(ROUTE_LAYER_ID, "line-color", colors.route);
+  }
+  if (state.map.getLayer(ROUTE_DASH_LAYER_ID)) {
+    state.map.setPaintProperty(ROUTE_DASH_LAYER_ID, "line-color", colors.dash);
+  }
+}
+
+function setTheme(theme) {
+  state.theme = theme === "dark" ? "dark" : "light";
+  document.body.dataset.theme = state.theme;
+  elements.themeLabel.textContent = state.theme === "dark" ? "Dark" : "Light";
+  for (const button of elements.themeButtons) {
+    button.classList.toggle("is-active", button.dataset.theme === state.theme);
+  }
+  if (state.map?.isStyleLoaded()) applyMapAppearance();
+}
+
+function setControlsCollapsed(isCollapsed) {
+  document.body.classList.toggle("controls-collapsed", isCollapsed);
+  elements.panelToggle.textContent = isCollapsed ? "設定" : "收合";
+  elements.panelToggle.setAttribute("aria-expanded", String(!isCollapsed));
+}
+
+function setRouteCardCollapsed(isCollapsed) {
+  elements.routeCard.classList.toggle("is-collapsed", isCollapsed);
+  elements.routeCardToggle.setAttribute("aria-expanded", String(!isCollapsed));
 }
 
 async function loadAttractions({ refresh = false } = {}) {
@@ -310,6 +363,7 @@ function clearRoute() {
 }
 
 function renderRoute(route) {
+  const routePaint = getRoutePaint();
   clearRoute();
   state.map.addSource(ROUTE_SOURCE_ID, {
     type: "geojson",
@@ -328,9 +382,9 @@ function renderRoute(route) {
       "line-join": "round",
     },
     paint: {
-      "line-color": "#0d1110",
+      "line-color": routePaint.casing,
       "line-width": ["interpolate", ["linear"], ["zoom"], 10, 10, 16, 17],
-      "line-opacity": 0.8,
+      "line-opacity": state.theme === "dark" ? 0.85 : 0.94,
     },
   });
   state.map.addLayer({
@@ -342,7 +396,7 @@ function renderRoute(route) {
       "line-join": "round",
     },
     paint: {
-      "line-color": "#39f0b2",
+      "line-color": routePaint.route,
       "line-width": ["interpolate", ["linear"], ["zoom"], 10, 5, 16, 10],
       "line-opacity": 0.95,
     },
@@ -356,7 +410,7 @@ function renderRoute(route) {
       "line-join": "round",
     },
     paint: {
-      "line-color": "#fff2a8",
+      "line-color": routePaint.dash,
       "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1.8, 16, 3.6],
       "line-dasharray": [0.2, 2.8],
       "line-opacity": 0.95,
@@ -416,6 +470,32 @@ async function planRoute() {
   }
 }
 
+elements.panelToggle.addEventListener("click", () => {
+  setControlsCollapsed(!document.body.classList.contains("controls-collapsed"));
+});
+
+elements.routeCardToggle.addEventListener("click", () => {
+  setRouteCardCollapsed(!elements.routeCard.classList.contains("is-collapsed"));
+});
+
+let routeTouchStartY = null;
+elements.routeCard.addEventListener("touchstart", (event) => {
+  routeTouchStartY = event.touches[0]?.clientY ?? null;
+});
+
+elements.routeCard.addEventListener("touchend", (event) => {
+  if (routeTouchStartY === null) return;
+  const endY = event.changedTouches[0]?.clientY ?? routeTouchStartY;
+  const deltaY = endY - routeTouchStartY;
+  routeTouchStartY = null;
+  if (Math.abs(deltaY) < 34) return;
+  setRouteCardCollapsed(deltaY > 0);
+});
+
+for (const button of elements.themeButtons) {
+  button.addEventListener("click", () => setTheme(button.dataset.theme));
+}
+
 for (const button of document.querySelectorAll(".mode-button")) {
   button.addEventListener("click", () => {
     state.travelMode = button.dataset.mode;
@@ -449,6 +529,9 @@ elements.attractionSelect.addEventListener("change", () => {
 (async function init() {
   setLoading(true);
   try {
+    setTheme("light");
+    setControlsCollapsed(window.matchMedia("(max-width: 980px)").matches);
+    setRouteCardCollapsed(false);
     await loadMapbox();
     await loadAttractions();
     setStatus("請取得位置");
