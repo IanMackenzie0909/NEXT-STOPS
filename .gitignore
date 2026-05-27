@@ -1,6 +1,9 @@
 NEXT_STOPS_Developer_Documentation.md
 .vscode/
 env/
+.env
+.env.local
+next-stops-api/data/saved_places.json
 
 *__pycache__/
 
@@ -13,3 +16,4 @@ node_modules/
 API Client.txt
 RailLiveBoard StationID.xml
 MRT-Liveboard.xml
+neglectedfiles/
