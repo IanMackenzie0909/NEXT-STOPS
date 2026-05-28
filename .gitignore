@@ -1,6 +1,7 @@
 NEXT_STOPS_Developer_Documentation.md
 .vscode/
 env/
+.env
 
 *__pycache__/
 
@@ -8,6 +9,8 @@ env/
 
 next_stops_figma_pack/
 node_modules/
+
+next-stops-api/
 .next/
 
 API Client.txt
