@@ -21,7 +21,7 @@ function applyPreset(key) {
 
 <template>
   <section class="hero">
-    <p class="eyebrow">用更安靜的方式決定下一站</p>
+    <p class="eyebrow">用更智慧的方式決定下一站</p>
     <h1 class="hero-title">現在不知道要<em>去哪裡</em>嗎？</h1>
     <p class="hero-sub">
       告訴 NEXT STOPS 你現在的心情，我們會依照時間、天氣、距離與預算，

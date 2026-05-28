@@ -18,7 +18,7 @@ DEFAULT_FORECAST_LOCATION = "臺北市"
 
 
 def load_root_env():
-    env_path = ROOT.parent / ".env"
+    env_path = ".env"
     if not env_path.exists():
         return
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():
