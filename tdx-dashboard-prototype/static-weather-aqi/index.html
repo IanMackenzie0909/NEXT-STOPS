@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Weather AQI Test Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="workspace">
+        <aside class="control-panel" aria-label="Weather and AQI controls">
+          <header class="panel-top">
+            <p class="eyebrow">CWA + MOENV</p>
+            <h1>Weather / AQI 測試</h1>
+            <p>用座標查詢附近即時氣象、行政區預報、紫外線與空品測站資料。</p>
+          </header>
+
+          <section class="status-bar">
+            <span>狀態</span>
+            <strong id="systemStatus">待查詢</strong>
+          </section>
+
+          <section class="control-group">
+            <div class="section-title">
+              <h2>目標座標</h2>
+              <small id="locationLabel">臺北車站</small>
+            </div>
+            <div class="field-grid">
+              <label>
+                緯度
+                <input id="latInput" type="number" step="0.000001" value="25.0478" />
+              </label>
+              <label>
+                經度
+                <input id="lonInput" type="number" step="0.000001" value="121.5170" />
+              </label>
+            </div>
+            <div class="button-row">
+              <button id="queryButton" type="button">查詢</button>
+              <button id="locateButton" class="secondary-button" type="button">目前位置</button>
+            </div>
+          </section>
+
+          <section class="control-group">
+            <div class="section-title">
+              <h2>快速地點</h2>
+              <small id="presetCount">0 筆</small>
+            </div>
+            <div id="presetList" class="preset-list"></div>
+          </section>
+
+          <section class="control-group">
+            <label class="toggle-row">
+              <input id="realOnlyToggle" type="checkbox" />
+              <span>只測真實 API，不使用 heuristic fallback</span>
+            </label>
+          </section>
+        </aside>
+
+        <section class="result-panel" aria-label="Weather and AQI results">
+          <section class="hero-result">
+            <div>
+              <p id="sourceMode">尚未取得資料</p>
+              <h2 id="weatherSummary">等待查詢</h2>
+            </div>
+            <div class="comfort-pill" id="comfortLabel">--</div>
+          </section>
+
+          <section class="metric-grid">
+            <article class="metric-card">
+              <span>氣溫</span>
+              <strong id="temperatureValue">--</strong>
+              <small id="humidityValue">濕度 --</small>
+            </article>
+            <article class="metric-card">
+              <span>降雨</span>
+              <strong id="rainValue">--</strong>
+              <small id="rainStationValue">測站 --</small>
+            </article>
+            <article class="metric-card">
+              <span>風</span>
+              <strong id="windValue">--</strong>
+              <small id="windDirectionValue">風向 --</small>
+            </article>
+            <article class="metric-card">
+              <span>紫外線</span>
+              <strong id="uvValue">--</strong>
+              <small id="uvStationValue">測站 --</small>
+            </article>
+            <article class="metric-card">
+              <span>AQI</span>
+              <strong id="aqiValue">--</strong>
+              <small id="aqiSiteValue">測站 --</small>
+            </article>
+            <article class="metric-card">
+              <span>PM2.5 / PM10</span>
+              <strong id="pmValue">--</strong>
+              <small id="pollutantValue">污染物 --</small>
+            </article>
+          </section>
+
+          <section class="detail-grid">
+            <article class="detail-block">
+              <div class="section-title">
+                <h2>資料來源</h2>
+                <small id="generatedAt">--</small>
+              </div>
+              <dl>
+                <div>
+                  <dt>氣象站</dt>
+                  <dd id="weatherStation">--</dd>
+                </div>
+                <div>
+                  <dt>預報地點</dt>
+                  <dd id="forecastLocation">--</dd>
+                </div>
+                <div>
+                  <dt>空品狀態</dt>
+                  <dd id="aqiStatus">--</dd>
+                </div>
+              </dl>
+            </article>
+
+            <article class="detail-block">
+              <div class="section-title">
+                <h2>錯誤紀錄</h2>
+                <small id="errorCount">0 筆</small>
+              </div>
+              <pre id="errorOutput">{}</pre>
+            </article>
+          </section>
+
+          <section class="raw-block">
+            <div class="section-title">
+              <h2>原始 JSON</h2>
+              <small id="payloadSize">--</small>
+            </div>
+            <pre id="rawOutput">{}</pre>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

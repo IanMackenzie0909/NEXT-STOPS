@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import ssl
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode
@@ -21,7 +22,7 @@ DEFAULT_FORECAST_LOCATION = "臺北市"
 
 
 def load_root_env():
-    env_path = ROOT.parent / ".env"
+    env_path = ROOT.parent / ".env" # ROOT.parent = 專案根目錄 NEXT-STOPS/
     if not env_path.exists():
         return
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():
@@ -33,6 +34,13 @@ def load_root_env():
 
 
 load_root_env()
+
+
+def create_ssl_context():
+    context = ssl.create_default_context()
+    if hasattr(ssl, "VERIFY_X509_STRICT"):
+        context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    return context
 
 
 def normalize(value):
@@ -370,11 +378,12 @@ class CWAWeatherClient:
         self.api_key = api_key or os.getenv("CWA_API_KEY") or os.getenv("WEATHER_API_KEY") or ""
         self.timeout_seconds = timeout_seconds
         self.forecast_location = forecast_location or os.getenv("CWA_FORECAST_LOCATION", DEFAULT_FORECAST_LOCATION)
+        self.ssl_context = create_ssl_context()
 
     def fetch_json(self, url, params):
         if params:
             url = f"{url}?{urlencode(params)}"
-        with urlopen(url, timeout=self.timeout_seconds) as response:
+        with urlopen(url, timeout=self.timeout_seconds, context=self.ssl_context) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def records(self, dataset, extra_params=None):

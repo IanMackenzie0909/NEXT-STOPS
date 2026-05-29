@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import ssl
 from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import urlopen
@@ -13,7 +14,7 @@ DEFAULT_TIMEOUT_SECONDS = 8
 
 
 def load_root_env():
-    env_path = ROOT.parent / ".env"
+    env_path = ROOT.parent / ".env" # ROOT.parent = 專案根目錄 NEXT-STOPS/
     if not env_path.exists():
         return
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():
@@ -25,6 +26,13 @@ def load_root_env():
 
 
 load_root_env()
+
+
+def create_ssl_context():
+    context = ssl.create_default_context()
+    if hasattr(ssl, "VERIFY_X509_STRICT"):
+        context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+    return context
 
 
 def parse_int(value, default=0):
@@ -134,11 +142,12 @@ class MOENVAQIClient:
     def __init__(self, api_key=None, timeout_seconds=DEFAULT_TIMEOUT_SECONDS):
         self.api_key = api_key or os.getenv("AQI_API_KEY") or os.getenv("MOENV_API_KEY") or ""
         self.timeout_seconds = timeout_seconds
+        self.ssl_context = create_ssl_context()
 
     def fetch_json(self, url, params):
         if params:
             url = f"{url}?{urlencode(params)}"
-        with urlopen(url, timeout=self.timeout_seconds) as response:
+        with urlopen(url, timeout=self.timeout_seconds, context=self.ssl_context) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def records(self, limit=1000):
