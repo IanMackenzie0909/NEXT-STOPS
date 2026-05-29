@@ -1,3 +1,10 @@
+"""整合中央氣象署天氣、紫外線與環境部空氣品質資料的 client。
+
+這個檔案不是獨立 HTTP server，而是被 next-stops-api/server.py 匯入。
+server.py 的 /api/context 會呼叫這裡的 get_context(lat, lon)，再把整理好的
+天氣、雨量、紫外線、AQI 與戶外舒適度回傳給前端。
+"""
+
 import json
 import math
 import os
@@ -9,6 +16,7 @@ from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parent
 
+# 外部 API 與資料集代碼集中放在這裡，之後要替換資料來源時比較容易維護。
 CWA_DATASTORE_BASE = "https://opendata.cwa.gov.tw/api/v1/rest/datastore"
 MOENV_AQI_URL = "https://data.moenv.gov.tw/api/v2/aqx_p_432"
 CWA_CURRENT_WEATHER_DATASET = "O-A0001-001"
@@ -22,6 +30,7 @@ DEFAULT_FORECAST_LOCATION = "臺北市"
 
 
 def load_root_env():
+    """讀取專案根目錄的 .env，讓直接執行本檔或 server.py 都能拿到 API key。"""
     env_path = ROOT.parent / ".env"
     if not env_path.exists():
         return
@@ -36,11 +45,17 @@ def load_root_env():
 load_root_env()
 
 
+# -----------------------------------------------------------------------------
+# 基礎資料整理工具
+# -----------------------------------------------------------------------------
+
 def normalize(value):
+    """把任意值轉成小寫字串，主要用於寬鬆比對欄位名稱或狀態文字。"""
     return str(value or "").strip().lower()
 
 
 def parse_int(value, default=0):
+    """安全轉整數；轉換失敗時回傳 default，避免 API 缺值讓整段流程中斷。"""
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -48,6 +63,7 @@ def parse_int(value, default=0):
 
 
 def parse_float(value, default=None):
+    """安全轉浮點數；座標與氣象數值常用這個函式處理。"""
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -55,6 +71,7 @@ def parse_float(value, default=None):
 
 
 def as_list(value):
+    """把單一值或 None 正規化成 list，方便處理 API 有時回物件、有時回陣列的格式。"""
     if isinstance(value, list):
         return value
     if value in (None, ""):
@@ -63,6 +80,7 @@ def as_list(value):
 
 
 def deep_get(data, paths, default=None):
+    """依序嘗試多組巢狀路徑，取出第一個存在且非空的值。"""
     for path in paths:
         current = data
         ok = True
@@ -83,6 +101,7 @@ def deep_get(data, paths, default=None):
 
 
 def normalize_number(value):
+    """把 CWA/MOENV 常見的缺值標記轉成 None，其餘值轉成 float。"""
     if value in (None, "", "-", "X", "x", "-99", "-99.0", "-999", "-999.0"):
         return None
     try:
@@ -95,6 +114,7 @@ def normalize_number(value):
 
 
 def normalize_text(value):
+    """把文字欄位去空白，並把 API 缺值標記轉成空字串。"""
     text = str(value or "").strip()
     if text in ("", "-", "X", "x", "-99", "-99.0", "-999", "-999.0"):
         return ""
@@ -102,6 +122,7 @@ def normalize_text(value):
 
 
 def flatten_pairs(value, prefix=""):
+    """把巢狀 dict/list 攤平成 path/value，用於不確定欄位名稱時的 keyword 搜尋。"""
     if isinstance(value, dict):
         for key, item in value.items():
             path = f"{prefix}.{key}" if prefix else str(key)
@@ -116,6 +137,7 @@ def flatten_pairs(value, prefix=""):
 
 
 def find_number_by_keywords(data, include_keywords, exclude_keywords=None):
+    """在整份巢狀資料中用欄位路徑 keyword 找第一個可用數值。"""
     exclude_keywords = exclude_keywords or []
     for path, value in flatten_pairs(data):
         haystack = normalize(path).replace("_", "").replace("-", "")
@@ -127,6 +149,7 @@ def find_number_by_keywords(data, include_keywords, exclude_keywords=None):
 
 
 def find_text_by_keywords(data, include_keywords):
+    """在整份巢狀資料中用欄位路徑 keyword 找第一個可用文字。"""
     for path, value in flatten_pairs(data):
         haystack = normalize(path).replace("_", "").replace("-", "")
         if any(keyword in haystack for keyword in include_keywords):
@@ -137,6 +160,7 @@ def find_text_by_keywords(data, include_keywords):
 
 
 def haversine_meters(lat1, lon1, lat2, lon2):
+    """用 haversine 公式計算兩個經緯度點的球面距離，單位是公尺。"""
     radius = 6371000
     phi1 = math.radians(lat1)
     phi2 = math.radians(lat2)
@@ -147,6 +171,7 @@ def haversine_meters(lat1, lon1, lat2, lon2):
 
 
 def uv_exposure_level(uv_index):
+    """當 CWA 沒提供紫外線暴露等級文字時，用 UV index 推估標準等級。"""
     if uv_index is None:
         return ""
     if uv_index <= 2:
@@ -160,7 +185,12 @@ def uv_exposure_level(uv_index):
     return "extreme"
 
 
+# -----------------------------------------------------------------------------
+# 座標、最近站點與 CWA/MOENV 回應格式 parser
+# -----------------------------------------------------------------------------
+
 def station_coordinates(item):
+    """從 CWA 觀測站資料中抽出測站座標，支援多種新舊欄位命名。"""
     lat = deep_get(item, [
         ("GeoInfo", "Coordinates", 0, "StationLatitude"),
         ("GeoInfo", "Coordinates", 0, "Latitude"),
@@ -190,6 +220,7 @@ def station_coordinates(item):
 
 
 def township_coordinates(item):
+    """從鄉鎮預報的行政區資料中抽出代表點座標。"""
     lat = normalize_number(item.get("Latitude") or item.get("latitude") or item.get("lat"))
     lon = normalize_number(item.get("Longitude") or item.get("longitude") or item.get("lon") or item.get("lng"))
     if lat is None or lon is None:
@@ -198,6 +229,7 @@ def township_coordinates(item):
 
 
 def nearest_item(items, lat, lon, coordinate_getter):
+    """在資料清單中找出距離使用者座標最近且有座標的項目。"""
     best = None
     for item in items:
         position = coordinate_getter(item)
@@ -214,6 +246,7 @@ def nearest_item(items, lat, lon, coordinate_getter):
 
 
 def cwa_uv_records(payload):
+    """整理 CWA 紫外線資料格式，把外層 Date/elementName 補進每筆測站資料。"""
     weather_element = deep_get(payload, [
         ("records", "weatherElement"),
         ("records", "WeatherElement"),
@@ -239,6 +272,7 @@ def cwa_uv_records(payload):
 
 
 def cwa_township_records(payload):
+    """整理 F-D0047 鄉鎮預報格式，攤平成行政區 location 清單。"""
     records = payload.get("records", {}) if isinstance(payload, dict) else {}
     groups = records.get("Locations") or records.get("locations") or []
     result = []
@@ -256,6 +290,7 @@ def cwa_township_records(payload):
 
 
 def cwa_station_name(item):
+    """從 CWA 觀測資料中抓測站名稱；沒有名稱時退回站號。"""
     return normalize_text(
         item.get("StationName")
         or item.get("locationName")
@@ -267,10 +302,12 @@ def cwa_station_name(item):
 
 
 def cwa_township_name(item):
+    """從鄉鎮預報資料中抓行政區名稱；沒有名稱時退回 geocode。"""
     return normalize_text(item.get("LocationName") or item.get("locationName") or item.get("Geocode") or "")
 
 
 def cwa_weather_element(item):
+    """把 CWA WeatherElement 正規化成 dict，讓後續可以用欄位名直接取值。"""
     element = item.get("WeatherElement") or item.get("weatherElement") or {}
     if isinstance(element, dict):
         return element
@@ -288,11 +325,13 @@ def cwa_weather_element(item):
 
 
 def cwa_forecast_elements(item):
+    """取得預報資料的 WeatherElement 陣列，並處理單筆/多筆格式差異。"""
     elements = item.get("WeatherElement") or item.get("weatherElement") or []
     return as_list(elements)
 
 
 def parse_cwa_datetime(value):
+    """解析 CWA ISO 時間字串；若來源沒有時區，保守補 UTC。"""
     text = normalize_text(value)
     if not text:
         return None
@@ -306,6 +345,7 @@ def parse_cwa_datetime(value):
 
 
 def select_forecast_time(times, now=None):
+    """從預報時間序列中選出最接近現在的時間點，優先選未來最近一筆。"""
     now = now or datetime.now(timezone.utc)
     future = None
     latest_past = None
@@ -327,6 +367,7 @@ def select_forecast_time(times, now=None):
 
 
 def first_forecast_value(time_item):
+    """從單一預報時間點取出第一個 ElementValue。"""
     value = deep_get(time_item, [
         ("ElementValue", 0),
         ("elementValue", 0),
@@ -339,6 +380,7 @@ def first_forecast_value(time_item):
 
 
 def aqi_coordinates(item):
+    """從環境部 AQI 測站資料中抽出座標。"""
     lat = normalize_number(item.get("latitude") or item.get("Latitude") or item.get("lat"))
     lon = normalize_number(item.get("longitude") or item.get("Longitude") or item.get("lon") or item.get("lng"))
     if lat is None or lon is None:
@@ -347,6 +389,7 @@ def aqi_coordinates(item):
 
 
 def first_usable_aqi_record(records):
+    """當找不到最近 AQI 站時，退回第一筆有 AQI 數值的資料。"""
     for item in records:
         if parse_int(item.get("aqi") or item.get("AQI"), None) is not None:
             return item
@@ -354,6 +397,7 @@ def first_usable_aqi_record(records):
 
 
 def first_usable_uv_record(records):
+    """當找不到最近 UV 站時，退回第一筆有 UV 數值的資料。"""
     for item in records:
         element = cwa_weather_element(item)
         uv_value = (
@@ -372,6 +416,7 @@ def first_usable_uv_record(records):
 
 
 def uv_record_by_station_id(records, station_id):
+    """優先用即時天氣觀測站同站號的 UV 資料，讓來源位置盡量一致。"""
     station_id = normalize_text(station_id)
     if not station_id:
         return None
@@ -389,19 +434,24 @@ def uv_record_by_station_id(records, station_id):
 
 
 class WeatherAQIClient:
+    """封裝所有外部天氣/AQI API 呼叫與資料合併邏輯。"""
+
     def __init__(self, cwa_api_key=None, aqi_api_key=None, timeout_seconds=DEFAULT_TIMEOUT_SECONDS, forecast_location=None):
+        """建立 client，優先使用傳入 key，否則從 .env / 環境變數讀取。"""
         self.cwa_api_key = cwa_api_key or os.getenv("CWA_API_KEY") or os.getenv("WEATHER_API_KEY") or ""
         self.aqi_api_key = aqi_api_key or os.getenv("AQI_API_KEY") or os.getenv("MOENV_API_KEY") or ""
         self.timeout_seconds = timeout_seconds
         self.forecast_location = forecast_location or os.getenv("CWA_FORECAST_LOCATION", DEFAULT_FORECAST_LOCATION)
 
     def fetch_json(self, url, params):
+        """送出 GET request 並解析 JSON；所有 CWA/MOENV 呼叫最後都會走這裡。"""
         if params:
             url = f"{url}?{urlencode(params)}"
         with urlopen(url, timeout=self.timeout_seconds) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def cwa_records(self, dataset, extra_params=None):
+        """呼叫 CWA datastore，並依不同資料集整理成統一的 records list。"""
         if not self.cwa_api_key:
             raise RuntimeError("CWA_API_KEY or WEATHER_API_KEY is not configured")
         params = {
@@ -411,6 +461,7 @@ class WeatherAQIClient:
         if extra_params:
             params.update(extra_params)
         payload = self.fetch_json(f"{CWA_DATASTORE_BASE}/{dataset}", params)
+        # CWA 各資料集 JSON 結構不完全一致，所以特殊格式先分流處理。
         if dataset == CWA_UV_DATASET:
             return cwa_uv_records(payload)
         if dataset == CWA_TAIPEI_TOWNSHIP_FORECAST_DATASET:
@@ -428,12 +479,14 @@ class WeatherAQIClient:
         )
 
     def current_weather(self, lat, lon):
+        """取得最近 CWA 自動氣象站的即時天氣觀測資料。"""
         records = self.cwa_records(CWA_CURRENT_WEATHER_DATASET)
         nearest = nearest_item(records, lat, lon, station_coordinates)
         if not nearest:
             raise RuntimeError("CWA current weather returned no station with coordinates")
         item = nearest["item"]
         element = cwa_weather_element(item)
+        # 觀測資料可能只有天氣描述，也可能是 WeatherElement 中的 Weather 欄位。
         weather = (
             element.get("Weather")
             or element.get("weather")
@@ -460,6 +513,7 @@ class WeatherAQIClient:
         }
 
     def rainfall(self, lat, lon):
+        """取得最近 CWA 雨量站的 10 分鐘、即時與 1 小時雨量。"""
         records = self.cwa_records(CWA_10MIN_RAIN_DATASET)
         nearest = nearest_item(records, lat, lon, station_coordinates)
         if not nearest:
@@ -469,6 +523,7 @@ class WeatherAQIClient:
         return {
             "station": cwa_station_name(item),
             "station_distance_meters": nearest["distance_meters"],
+            # 不同版本資料欄位大小寫略有差異，因此 deep_get 同時嘗試多個路徑。
             "precipitation_10min_mm": normalize_number(deep_get(rainfall, [
                 ("Past10Min", "Precipitation"),
                 ("past10Min", "precipitation"),
@@ -488,6 +543,7 @@ class WeatherAQIClient:
         }
 
     def uv(self, lat, lon, station_id=""):
+        """取得紫外線資料；若可行會優先使用和即時天氣同站號的資料。"""
         records = self.cwa_records(CWA_UV_DATASET)
         nearest = nearest_item(records, lat, lon, station_coordinates)
         item = uv_record_by_station_id(records, station_id) if station_id else None
@@ -496,6 +552,7 @@ class WeatherAQIClient:
         if not item:
             raise RuntimeError("CWA UV returned no usable record")
         element = cwa_weather_element(item)
+        # UV 資料欄位名稱在不同回應中不完全一致，先列常見欄位，再用 keyword 補抓。
         uv_index = (
             normalize_number(
                 element.get("UVIndex")
@@ -506,6 +563,7 @@ class WeatherAQIClient:
             )
             or find_number_by_keywords(item, ["uvindex", "uvi", "uv", "紫外線"], ["longitude", "latitude"])
         )
+        # 若 API 沒有暴露等級文字，就根據 UV index 用 uv_exposure_level() 推估。
         exposure_level = (
             normalize_text(
                 element.get("UVExposureLevel")
@@ -532,6 +590,7 @@ class WeatherAQIClient:
         }
 
     def forecast(self):
+        """取得縣市層級 36 小時預報，作為較粗粒度的備援預報資料。"""
         records = self.cwa_records(CWA_36H_FORECAST_DATASET, {"locationName": self.forecast_location})
         location = records[0] if records else {}
         elements = location.get("weatherElement", []) or location.get("WeatherElement", [])
@@ -546,6 +605,7 @@ class WeatherAQIClient:
         }
         for element in elements:
             name = element.get("elementName")
+            # F-C0032 的每個 WeatherElement 都有多個 time；這裡只取最近一段。
             first_time = as_list(element.get("time"))[0] if as_list(element.get("time")) else {}
             value = deep_get(first_time, [
                 ("parameter", "parameterName"),
@@ -567,9 +627,11 @@ class WeatherAQIClient:
         return result
 
     def township_forecast(self, lat, lon):
+        """取得臺北市行政區層級預報，補足測站停擺或資料缺值時的溫度/濕度/風等欄位。"""
         records = self.cwa_records(CWA_TAIPEI_TOWNSHIP_FORECAST_DATASET, {
             "ElementName": CWA_TOWNSHIP_ELEMENT_NAMES,
         })
+        # F-D0047 提供各行政區代表點座標，這裡用最近行政區代表點對應輸入座標。
         nearest = nearest_item(records, lat, lon, township_coordinates)
         if not nearest:
             raise RuntimeError("CWA township forecast returned no location with coordinates")
@@ -591,6 +653,7 @@ class WeatherAQIClient:
         }
 
         for element in cwa_forecast_elements(item):
+            # 每個 element 有自己的時間序列；逐一選出最接近現在的時間點。
             time_item = select_forecast_time(element.get("Time") or element.get("time"))
             if not time_item:
                 continue
@@ -600,6 +663,7 @@ class WeatherAQIClient:
                 result["end_time"] = time_item.get("EndTime", "") or time_item.get("endTime", "")
 
             value = first_forecast_value(time_item)
+            # 根據 ElementValue 實際存在的 key 判斷是哪一種氣象元素。
             if "Temperature" in value:
                 result["temperature_c"] = normalize_number(value.get("Temperature"))
             if "RelativeHumidity" in value:
@@ -615,6 +679,7 @@ class WeatherAQIClient:
         return result
 
     def aqi(self, lat, lon):
+        """取得環境部 AQI 資料，並選出離輸入座標最近的空品測站。"""
         if not self.aqi_api_key:
             raise RuntimeError("AQI_API_KEY or MOENV_API_KEY is not configured")
         payload = self.fetch_json(MOENV_AQI_URL, {
@@ -627,6 +692,7 @@ class WeatherAQIClient:
             records = records.get("records", []) or records.get("data", []) or []
         if not isinstance(records, list):
             raise RuntimeError("MOENV AQI returned unexpected records format")
+        # AQI 站點比氣象站稀疏；找不到座標最近站時再退回第一筆可用 AQI。
         nearest = nearest_item(records, lat, lon, aqi_coordinates)
         item = nearest["item"] if nearest else first_usable_aqi_record(records)
         if not item:
@@ -646,6 +712,8 @@ class WeatherAQIClient:
         }
 
     def real_context(self, lat, lon):
+        """取得真實外部資料並合併成前端需要的 context JSON。"""
+        # 每個來源獨立記錄錯誤；單一 API 失敗時不讓整個 context 直接失敗。
         errors = {}
         current = {}
         rainfall = {}
@@ -654,6 +722,8 @@ class WeatherAQIClient:
         township_forecast = {}
         aqi = {}
 
+        # 依序呼叫各資料來源。UV 會嘗試沿用 current_weather 的 station_id，
+        # 所以 current_weather 放在 uv 前面。
         for label, loader in [
             ("current_weather", lambda: self.current_weather(lat, lon)),
             ("rainfall_10min", lambda: self.rainfall(lat, lon)),
@@ -679,12 +749,15 @@ class WeatherAQIClient:
             except Exception as exc:
                 errors[label] = str(exc)
 
+        # 有些 UV 回應只有站號或資料值，這裡補上即時觀測站名稱，讓前端顯示更完整。
         if uv and current.get("station") and not uv.get("station"):
             uv["station"] = current.get("station")
 
+        # 如果所有外部資料都失敗，才往上丟錯，交給 context() 使用 heuristic fallback。
         if not current and not aqi and not forecast and not township_forecast and not rainfall and not uv:
             raise RuntimeError("; ".join(errors.values()) or "No external context data available")
 
+        # 降雨機率優先用行政區預報，其次縣市 36 小時預報；若都沒有，用最近雨量推估。
         rain_probability = township_forecast.get("rain_probability")
         if rain_probability is None:
             rain_probability = forecast.get("rain_probability")
@@ -692,8 +765,11 @@ class WeatherAQIClient:
             rain_10min = rainfall.get("precipitation_10min_mm") or 0
             rain_probability = min(0.95, 0.15 + rain_10min / 10)
 
+        # AQI 狀態保留 API 原文；若沒有狀態文字，根據數值粗略分類。
         aqi_value = aqi.get("aqi")
         aqi_status = aqi.get("status") or ("good" if aqi_value and aqi_value <= 50 else "moderate" if aqi_value and aqi_value <= 100 else "unknown")
+
+        # 氣溫、濕度、風速採觀測優先；觀測缺值時才用行政區預報補。
         temperature = current.get("temperature_c")
         if temperature is None:
             temperature = township_forecast.get("temperature_c")
@@ -707,6 +783,8 @@ class WeatherAQIClient:
             wind_speed = aqi.get("wind_speed_mps")
         wind_direction = current.get("wind_direction_degrees") if current.get("wind_direction_degrees") is not None else aqi.get("wind_direction_degrees")
         uv_index = uv.get("uv_index")
+
+        # 天氣現象文字採即時觀測優先，再退到行政區與縣市預報。
         weather_text = current.get("weather") or township_forecast.get("weather") or forecast.get("weather") or ""
         used_township_fallback = bool(township_forecast) and (
             current.get("temperature_c") is None
@@ -717,6 +795,7 @@ class WeatherAQIClient:
         )
         weather_source = "CWA observation + township forecast fallback" if used_township_fallback else "CWA Open Data"
 
+        # 將多個指標壓成前端可直接使用的戶外舒適度狀態。
         outdoor_comfort = "comfortable"
         if rain_probability >= 0.5 or (rainfall.get("precipitation_10min_mm") or 0) > 0:
             outdoor_comfort = "rain_risk"
@@ -733,6 +812,7 @@ class WeatherAQIClient:
         elif wind_speed and wind_speed >= 10:
             outdoor_comfort = "windy"
 
+        # summary 是給卡片或列表快速顯示的短句，詳細數值仍保留在各欄位。
         summary_parts = []
         if weather_text:
             summary_parts.append(weather_text)
@@ -742,6 +822,7 @@ class WeatherAQIClient:
         if wind_speed is not None:
             summary_parts.append(f"wind {wind_speed} m/s")
 
+        # 最終輸出結構刻意固定，讓前端不需要知道每個外部 API 的原始格式。
         return {
             "location": {"lat": lat, "lon": lon},
             "weather": {
@@ -789,12 +870,15 @@ class WeatherAQIClient:
         }
 
     def heuristic_context(self, lat, lon, fallback_error=""):
+        """外部 API 無法使用時的原型 fallback，避免前端完全沒有資料可顯示。"""
+        # 用座標產生穩定的 pseudo-random seed，同一地點會得到一致的模擬資料。
         seed = abs(math.sin(lat * 12.9898 + lon * 78.233))
         temperature = round(21 + seed * 8, 1)
         rain_probability = round(0.12 + (seed * 0.42), 2)
         aqi_value = int(35 + seed * 55)
         aqi_status = "good" if aqi_value <= 50 else "moderate" if aqi_value <= 100 else "poor"
         outdoor_comfort = "comfortable"
+        # 原型狀態只做粗略判斷，明確標記 source 為 prototype heuristic。
         if rain_probability > 0.45:
             outdoor_comfort = "rain_risk"
         elif aqi_value > 80:
@@ -841,21 +925,29 @@ class WeatherAQIClient:
         }
 
     def context(self, lat, lon):
+        """公開入口：先取真實資料，失敗時自動退回 heuristic_context。"""
         try:
             return self.real_context(lat, lon)
         except Exception as exc:
             return self.heuristic_context(lat, lon, str(exc))
 
 
+# -----------------------------------------------------------------------------
+# 模組層級公開函式：server.py 主要呼叫這裡
+# -----------------------------------------------------------------------------
+
 def get_context(lat, lon):
+    """給 server.py 使用的簡易入口；會自動 fallback，不會輕易丟錯到前端。"""
     return WeatherAQIClient().context(lat, lon)
 
 
 def get_real_context(lat, lon):
+    """測試或除錯用入口；只取真實外部 API，失敗時直接丟出錯誤。"""
     return WeatherAQIClient().real_context(lat, lon)
 
 
 if __name__ == "__main__":
+    # 直接執行本檔時，輸出一份 sample context JSON，方便快速驗證 API key 與資料格式。
     sample_lat = parse_float(os.getenv("NEXT_STOPS_SAMPLE_LAT"), 25.044)
     sample_lon = parse_float(os.getenv("NEXT_STOPS_SAMPLE_LON"), 121.5294)
     print(json.dumps(get_context(sample_lat, sample_lon), ensure_ascii=False, indent=2))
