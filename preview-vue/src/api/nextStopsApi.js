@@ -1,7 +1,7 @@
 const storedBase = localStorage.getItem("nextstops:apiBase");
 
 export const API_BASE =
-  storedBase || import.meta.env.VITE_NEXT_STOPS_API_BASE || "http://127.0.0.1:8790";
+  import.meta.env.VITE_NEXT_STOPS_API_BASE || storedBase || "http://127.0.0.1:8790";
 
 export async function apiFetch(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {

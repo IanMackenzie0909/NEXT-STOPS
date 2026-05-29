@@ -1,6 +1,7 @@
 import json
 import math
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import urlopen
@@ -13,12 +14,14 @@ CWA_CURRENT_WEATHER_DATASET = "O-A0001-001"
 CWA_10MIN_RAIN_DATASET = "O-A0003-001"
 CWA_UV_DATASET = "O-A0005-001"
 CWA_36H_FORECAST_DATASET = "F-C0032-001"
+CWA_TAIPEI_TOWNSHIP_FORECAST_DATASET = "F-D0047-061"
+CWA_TOWNSHIP_ELEMENT_NAMES = "溫度,相對濕度,3小時降雨機率,風速,天氣現象"
 DEFAULT_TIMEOUT_SECONDS = 8
 DEFAULT_FORECAST_LOCATION = "臺北市"
 
 
 def load_root_env():
-    env_path = ".env"
+    env_path = ROOT.parent / ".env"
     if not env_path.exists():
         return
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():
@@ -178,6 +181,14 @@ def station_coordinates(item):
     return {"lat": lat, "lon": lon}
 
 
+def township_coordinates(item):
+    lat = normalize_number(item.get("Latitude") or item.get("latitude") or item.get("lat"))
+    lon = normalize_number(item.get("Longitude") or item.get("longitude") or item.get("lon") or item.get("lng"))
+    if lat is None or lon is None:
+        return None
+    return {"lat": lat, "lon": lon}
+
+
 def nearest_item(items, lat, lon, coordinate_getter):
     best = None
     for item in items:
@@ -219,6 +230,23 @@ def cwa_uv_records(payload):
     return records
 
 
+def cwa_township_records(payload):
+    records = payload.get("records", {}) if isinstance(payload, dict) else {}
+    groups = records.get("Locations") or records.get("locations") or []
+    result = []
+    for group in as_list(groups):
+        if not isinstance(group, dict):
+            continue
+        group_name = group.get("LocationsName") or group.get("locationsName") or group.get("DatasetDescription") or ""
+        for item in as_list(group.get("Location") or group.get("location")):
+            if not isinstance(item, dict):
+                continue
+            record = dict(item)
+            record.setdefault("locationsName", group_name)
+            result.append(record)
+    return result
+
+
 def cwa_station_name(item):
     return normalize_text(
         item.get("StationName")
@@ -228,6 +256,10 @@ def cwa_station_name(item):
         or item.get("StationID")
         or ""
     )
+
+
+def cwa_township_name(item):
+    return normalize_text(item.get("LocationName") or item.get("locationName") or item.get("Geocode") or "")
 
 
 def cwa_weather_element(item):
@@ -245,6 +277,57 @@ def cwa_weather_element(item):
         if name:
             result[name] = value
     return result
+
+
+def cwa_forecast_elements(item):
+    elements = item.get("WeatherElement") or item.get("weatherElement") or []
+    return as_list(elements)
+
+
+def parse_cwa_datetime(value):
+    text = normalize_text(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def select_forecast_time(times, now=None):
+    now = now or datetime.now(timezone.utc)
+    future = None
+    latest_past = None
+    first_usable = None
+    for item in as_list(times):
+        if not isinstance(item, dict):
+            continue
+        ref_time = parse_cwa_datetime(item.get("DataTime") or item.get("StartTime") or item.get("startTime"))
+        if not ref_time:
+            continue
+        if first_usable is None:
+            first_usable = (ref_time, item)
+        if ref_time >= now and (future is None or ref_time < future[0]):
+            future = (ref_time, item)
+        if ref_time <= now and (latest_past is None or ref_time > latest_past[0]):
+            latest_past = (ref_time, item)
+    selected = future or latest_past or first_usable
+    return selected[1] if selected else {}
+
+
+def first_forecast_value(time_item):
+    value = deep_get(time_item, [
+        ("ElementValue", 0),
+        ("elementValue", 0),
+        ("ElementValue",),
+        ("elementValue",),
+    ], {})
+    if isinstance(value, dict):
+        return value
+    return {"value": value}
 
 
 def first_usable_uv_record(records):
@@ -306,6 +389,8 @@ class CWAWeatherClient:
         payload = self.fetch_json(f"{CWA_DATASTORE_BASE}/{dataset}", params)
         if dataset == CWA_UV_DATASET:
             return cwa_uv_records(payload)
+        if dataset == CWA_TAIPEI_TOWNSHIP_FORECAST_DATASET:
+            return cwa_township_records(payload)
         records = payload.get("records", {})
         if isinstance(records, list):
             return records
@@ -456,18 +541,68 @@ class CWAWeatherClient:
                 result["max_temperature_c"] = normalize_number(value)
         return result
 
+    def township_forecast(self, lat, lon):
+        records = self.records(CWA_TAIPEI_TOWNSHIP_FORECAST_DATASET, {
+            "ElementName": CWA_TOWNSHIP_ELEMENT_NAMES,
+        })
+        nearest = nearest_item(records, lat, lon, township_coordinates)
+        if not nearest:
+            raise RuntimeError("CWA township forecast returned no location with coordinates")
+
+        item = nearest["item"]
+        result = {
+            "location": cwa_township_name(item),
+            "geocode": item.get("Geocode") or item.get("geocode") or "",
+            "location_distance_meters": nearest["distance_meters"],
+            "weather": "",
+            "temperature_c": None,
+            "relative_humidity": None,
+            "rain_probability": None,
+            "wind_speed_mps": None,
+            "data_time": "",
+            "start_time": "",
+            "end_time": "",
+            "source": "CWA township forecast",
+        }
+
+        for element in cwa_forecast_elements(item):
+            time_item = select_forecast_time(element.get("Time") or element.get("time"))
+            if not time_item:
+                continue
+            if not result["data_time"]:
+                result["data_time"] = time_item.get("DataTime", "") or time_item.get("dataTime", "")
+                result["start_time"] = time_item.get("StartTime", "") or time_item.get("startTime", "")
+                result["end_time"] = time_item.get("EndTime", "") or time_item.get("endTime", "")
+
+            value = first_forecast_value(time_item)
+            if "Temperature" in value:
+                result["temperature_c"] = normalize_number(value.get("Temperature"))
+            if "RelativeHumidity" in value:
+                result["relative_humidity"] = normalize_number(value.get("RelativeHumidity"))
+            if "ProbabilityOfPrecipitation" in value:
+                pop = normalize_number(value.get("ProbabilityOfPrecipitation"))
+                result["rain_probability"] = pop / 100 if pop is not None else None
+            if "WindSpeed" in value:
+                result["wind_speed_mps"] = normalize_number(value.get("WindSpeed"))
+            if "Weather" in value:
+                result["weather"] = normalize_text(value.get("Weather"))
+
+        return result
+
     def context(self, lat, lon, forecast_location=None):
         errors = {}
         current = {}
         rainfall = {}
         uv = {}
         forecast = {}
+        township_forecast = {}
 
         for label, loader in [
             ("current_weather", lambda: self.current_weather(lat, lon)),
             ("rainfall_10min", lambda: self.rainfall(lat, lon)),
             ("uv", lambda: self.uv(lat, lon, current.get("station_id", ""))),
             ("forecast_36h", lambda: self.forecast(forecast_location)),
+            ("township_forecast", lambda: self.township_forecast(lat, lon)),
         ]:
             try:
                 value = loader()
@@ -479,20 +614,39 @@ class CWAWeatherClient:
                     uv = value
                 elif label == "forecast_36h":
                     forecast = value
+                elif label == "township_forecast":
+                    township_forecast = value
             except Exception as exc:
                 errors[label] = str(exc)
 
-        if not current and not rainfall and not uv and not forecast:
+        if not current and not rainfall and not uv and not forecast and not township_forecast:
             raise RuntimeError("; ".join(errors.values()) or "No CWA weather data available")
 
-        rain_probability = forecast.get("rain_probability")
+        rain_probability = township_forecast.get("rain_probability")
+        if rain_probability is None:
+            rain_probability = forecast.get("rain_probability")
         if rain_probability is None:
             rain_10min = rainfall.get("precipitation_10min_mm") or 0
             rain_probability = min(0.95, 0.15 + rain_10min / 10)
 
         temperature = current.get("temperature_c")
+        if temperature is None:
+            temperature = township_forecast.get("temperature_c")
+        relative_humidity = current.get("relative_humidity")
+        if relative_humidity is None:
+            relative_humidity = township_forecast.get("relative_humidity")
         wind_speed = current.get("wind_speed_mps")
+        if wind_speed is None:
+            wind_speed = township_forecast.get("wind_speed_mps")
         uv_index = uv.get("uv_index")
+        weather_text = current.get("weather") or township_forecast.get("weather") or forecast.get("weather") or ""
+        used_township_fallback = bool(township_forecast) and (
+            current.get("temperature_c") is None
+            or current.get("relative_humidity") is None
+            or current.get("wind_speed_mps") is None
+            or not current.get("weather")
+            or township_forecast.get("rain_probability") is not None
+        )
         outdoor_comfort = "comfortable"
         if rain_probability >= 0.5 or (rainfall.get("precipitation_10min_mm") or 0) > 0:
             outdoor_comfort = "rain_risk"
@@ -508,8 +662,8 @@ class CWAWeatherClient:
             outdoor_comfort = "windy"
 
         summary_parts = []
-        if current.get("weather"):
-            summary_parts.append(current["weather"])
+        if weather_text:
+            summary_parts.append(weather_text)
         if temperature is not None:
             summary_parts.append(f"{temperature}C")
         summary_parts.append(f"rain risk {round(rain_probability * 100)}%")
@@ -520,9 +674,9 @@ class CWAWeatherClient:
             "location": {"lat": lat, "lon": lon},
             "weather": {
                 "summary": ", ".join(summary_parts),
-                "weather": current.get("weather") or forecast.get("weather") or "",
+                "weather": weather_text,
                 "temperature_c": temperature,
-                "relative_humidity": current.get("relative_humidity"),
+                "relative_humidity": relative_humidity,
                 "rain_probability": rain_probability,
                 "precipitation_10min_mm": rainfall.get("precipitation_10min_mm"),
                 "precipitation_1hr_mm": rainfall.get("precipitation_1hr_mm"),
@@ -530,9 +684,11 @@ class CWAWeatherClient:
                 "wind_direction_degrees": current.get("wind_direction_degrees"),
                 "pressure_hpa": current.get("pressure_hpa"),
                 "forecast": forecast,
-                "source": "CWA Open Data",
+                "township_forecast": township_forecast,
+                "source": "CWA observation + township forecast fallback" if used_township_fallback else "CWA Open Data",
                 "station": current.get("station"),
                 "rain_station": rainfall.get("station"),
+                "forecast_location": township_forecast.get("location") or forecast.get("location"),
                 "observation_time": current.get("observation_time"),
             },
             "uv": {
@@ -563,6 +719,10 @@ def get_uv(lat, lon, station_id=""):
 
 def get_forecast(location_name=None):
     return CWAWeatherClient().forecast(location_name)
+
+
+def get_township_forecast(lat, lon):
+    return CWAWeatherClient().township_forecast(lat, lon)
 
 
 def get_context(lat, lon, forecast_location=None):

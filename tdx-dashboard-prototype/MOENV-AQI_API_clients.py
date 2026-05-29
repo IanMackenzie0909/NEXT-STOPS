@@ -13,7 +13,7 @@ DEFAULT_TIMEOUT_SECONDS = 8
 
 
 def load_root_env():
-    env_path = ".env"
+    env_path = ROOT.parent / ".env"
     if not env_path.exists():
         return
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():
@@ -180,6 +180,9 @@ class MOENVAQIClient:
             "publish_time": normalize_text(item.get("publishtime") or item.get("PublishTime") or ""),
             "source": "MOENV Open Data",
         }
+
+    def aqi(self, lat, lon):
+        return self.nearest_aqi(lat, lon)
 
     def context(self, lat, lon):
         return {

@@ -9,6 +9,7 @@ env/
 
 next_stops_figma_pack/
 node_modules/
+Weather_AQI_API_Clients.py
 
 next-stops-api/
 .next/
