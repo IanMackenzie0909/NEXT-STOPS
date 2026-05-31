@@ -21,3 +21,5 @@ RailLiveBoard StationID.xml
 MRT-Liveboard.xml
 
 index-mapbox-sample.html
+neglectedfiles/
+*.bat
