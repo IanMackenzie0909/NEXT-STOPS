@@ -12,13 +12,23 @@ import {
   Map,
   MapPinned,
   RefreshCw,
+  SlidersHorizontal,
   Sparkles,
   UserRound
 } from "lucide-react";
-import type { RecommendationContext, RecommendationResult } from "../lib/recommendation-engine";
+import type { Mood, Purpose, RecommendationContext, RecommendationResult } from "../lib/recommendation-engine";
 import { AppIcon } from "./AppIcon";
 
 export type Screen = "welcome" | "home" | "detail" | "plan";
+export type RecommendationControls = {
+  query: string;
+  openNowOnly: boolean;
+  mood: Mood;
+  purpose: Purpose;
+  maxTravelMinutes: number;
+  preferredTagsText: string;
+  preferenceWeight: number;
+};
 
 type RecommendationProps = {
   recommendation: RecommendationResult | null;
@@ -81,7 +91,7 @@ function Nav({ current, go }: { current: Screen; go: (s: Screen) => void }) {
   ] as const;
 
   return (
-    <div className="absolute bottom-5 left-5 right-5 flex justify-around rounded-[28px] bg-white/90 p-3 shadow-calm backdrop-blur">
+    <div className="mt-5 flex justify-around rounded-[28px] bg-white/90 p-3 shadow-calm backdrop-blur">
       {items.map(([screen, Icon, label]) => (
         <button key={label} onClick={() => go(screen)} className={current === screen ? "text-indigo" : "text-slate-400"}>
           <Icon className="mx-auto h-5 w-5" />
@@ -95,19 +105,25 @@ function Nav({ current, go }: { current: Screen; go: (s: Screen) => void }) {
 export function HomeScreen({
   go,
   context,
+  controls,
   isLoading,
+  onApplyControls,
+  onControlsChange,
   recommendation
 }: {
   go: (s: Screen) => void;
   context: RecommendationContext | null;
+  controls: RecommendationControls;
   isLoading: boolean;
+  onApplyControls: () => void;
+  onControlsChange: (controls: RecommendationControls) => void;
   recommendation: RecommendationResult | null;
 }) {
   const place = recommendation?.place;
   const chips = recommendation?.chips ?? ["-- C", "-- km", "Loading"];
 
   return (
-    <main className="relative min-h-[816px] px-6 py-8 fade-up">
+    <main className="relative h-[816px] overflow-y-auto px-6 pb-8 pt-8 fade-up [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       <header className="mb-6 flex items-center justify-between">
         <div>
           <p className="text-sm text-muted">Good morning, Ian</p>
@@ -149,8 +165,176 @@ export function HomeScreen({
         <Metric title="Match" value={recommendation ? `${recommendation.score}%` : "--"} />
       </section>
 
+      <RecommendationControlPanel
+        controls={controls}
+        isLoading={isLoading}
+        onApply={onApplyControls}
+        onChange={onControlsChange}
+      />
+
       <Nav current="home" go={go} />
     </main>
+  );
+}
+
+function RecommendationControlPanel({
+  controls,
+  isLoading,
+  onApply,
+  onChange
+}: {
+  controls: RecommendationControls;
+  isLoading: boolean;
+  onApply: () => void;
+  onChange: (controls: RecommendationControls) => void;
+}) {
+  function update(nextControls: Partial<RecommendationControls>) {
+    onChange({ ...controls, ...nextControls });
+  }
+
+  return (
+    <section className="mt-5 rounded-app bg-white p-4 shadow-calm">
+      <div className="mb-4 flex items-center justify-between">
+        <div>
+          <p className="text-xs font-bold tracking-[.2em] text-indigo">TUNE THE MODEL</p>
+          <h3 className="mt-1 text-lg font-semibold">Recommendation controls</h3>
+        </div>
+        <SlidersHorizontal className="h-5 w-5 text-indigo" />
+      </div>
+
+      <div className="space-y-4">
+        <label className="block">
+          <span className="mb-1 block text-xs font-semibold text-muted">Search text</span>
+          <input
+            value={controls.query}
+            onChange={(event) => update({ query: event.target.value })}
+            placeholder="nature, cafe, walk"
+            className="h-11 w-full rounded-2xl border border-slate-200 bg-soft px-3 text-sm font-medium text-ink outline-none focus:border-indigo"
+          />
+        </label>
+
+        <div className="grid grid-cols-2 gap-3">
+          <label className="block">
+            <span className="mb-1 block text-xs font-semibold text-muted">Open status</span>
+            <select
+              value={controls.openNowOnly ? "open" : "any"}
+              onChange={(event) => update({ openNowOnly: event.target.value === "open" })}
+              className="h-11 w-full rounded-2xl border border-slate-200 bg-soft px-3 text-sm font-semibold text-ink outline-none focus:border-indigo"
+            >
+              <option value="open">Open now</option>
+              <option value="any">Any status</option>
+            </select>
+          </label>
+
+          <label className="block">
+            <span className="mb-1 block text-xs font-semibold text-muted">Mood</span>
+            <select
+              value={controls.mood}
+              onChange={(event) => update({ mood: event.target.value as Mood })}
+              className="h-11 w-full rounded-2xl border border-slate-200 bg-soft px-3 text-sm font-semibold text-ink outline-none focus:border-indigo"
+            >
+              <option value="tired">Tired</option>
+              <option value="focused">Focused</option>
+              <option value="social">Social</option>
+              <option value="restless">Restless</option>
+            </select>
+          </label>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <label className="block">
+            <span className="mb-1 block text-xs font-semibold text-muted">Purpose</span>
+            <select
+              value={controls.purpose}
+              onChange={(event) => update({ purpose: event.target.value as Purpose })}
+              className="h-11 w-full rounded-2xl border border-slate-200 bg-soft px-3 text-sm font-semibold text-ink outline-none focus:border-indigo"
+            >
+              <option value="relax">Relax</option>
+              <option value="work">Work</option>
+              <option value="explore">Explore</option>
+              <option value="exercise">Exercise</option>
+              <option value="eat">Eat</option>
+            </select>
+          </label>
+
+          <label className="block">
+            <span className="mb-1 block text-xs font-semibold text-muted">Preference tags</span>
+            <input
+              value={controls.preferredTagsText}
+              onChange={(event) => update({ preferredTagsText: event.target.value })}
+              placeholder="calm, food"
+              className="h-11 w-full rounded-2xl border border-slate-200 bg-soft px-3 text-sm font-medium text-ink outline-none focus:border-indigo"
+            />
+          </label>
+        </div>
+
+        <RangeControl
+          label="Max travel distance"
+          max={60}
+          min={10}
+          suffix="min"
+          value={controls.maxTravelMinutes}
+          onChange={(value) => update({ maxTravelMinutes: value })}
+        />
+
+        <RangeControl
+          label="Preference score weight"
+          max={2}
+          min={0}
+          step={0.25}
+          suffix="x"
+          value={controls.preferenceWeight}
+          onChange={(value) => update({ preferenceWeight: value })}
+        />
+
+        <button
+          onClick={onApply}
+          disabled={isLoading}
+          className="h-12 w-full rounded-full soft-gradient px-5 text-sm font-semibold text-white shadow-float disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {isLoading ? "Scoring..." : "Update recommendation"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function RangeControl({
+  label,
+  max,
+  min,
+  onChange,
+  step = 1,
+  suffix,
+  value
+}: {
+  label: string;
+  max: number;
+  min: number;
+  onChange: (value: number) => void;
+  step?: number;
+  suffix: string;
+  value: number;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-2 flex items-center justify-between text-xs font-semibold text-muted">
+        <span>{label}</span>
+        <span className="text-ink">
+          {value}
+          {suffix}
+        </span>
+      </span>
+      <input
+        type="range"
+        max={max}
+        min={min}
+        step={step}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="w-full accent-indigo"
+      />
+    </label>
   );
 }
 
