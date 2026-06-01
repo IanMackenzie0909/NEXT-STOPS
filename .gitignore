@@ -1,6 +1,8 @@
 NEXT_STOPS_Developer_Documentation.md
+LLM_ENHANCEMENT_PLAN.md
 .vscode/
 env/
+.venv/
 .env
 
 *__pycache__/
