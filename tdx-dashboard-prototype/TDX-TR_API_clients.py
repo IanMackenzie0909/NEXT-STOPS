@@ -3,8 +3,8 @@ import unicodedata
 from datetime import datetime, time, timedelta
 
 
-client_id = 'your-TDX-client-id'  # your-TDX-client-id
-client_secret = 'your-TDX-client-secret'  # your-TDX-client-secret
+client_id = 'your_TDX_client_id'  # your_TDX_client_id
+client_secret = 'your_TDX_client_secret'  # your_TDX_client_secret
 
 
 class TDX():

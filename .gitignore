@@ -12,7 +12,10 @@ outputs/
 
 next_stops_figma_pack/
 node_modules/
+NEXT-STOPS-recommendation-algorithm/
+
 Weather_AQI_API_Clients.py
+next_stops_algorithm_simulation.py
 
 static-weather-aqi-backup/
 next-stops-api/
