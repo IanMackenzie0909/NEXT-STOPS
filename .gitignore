@@ -16,8 +16,8 @@ NEXT-STOPS-recommendation-algorithm/
 
 Weather_AQI_API_Clients.py
 next_stops_algorithm_simulation.py
-# algorithm_stress_test.py
-# simulation_data.py
+algorithm_stress_test.py
+simulation_data.py
 
 static-weather-aqi-backup/
 next-stops-api/
