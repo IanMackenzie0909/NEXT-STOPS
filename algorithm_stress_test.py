@@ -13,12 +13,10 @@ import matplotlib.pyplot as plt
 
 from algorithm import (
     Place,
-    SCENARIO_CONFIGS,
     count_output_constraint_violations,
-    generate_candidates,
-    make_user_state,
     recommend,
 )
+from simulation_data import SCENARIO_CONFIGS, generate_candidates, make_user_state
 
 
 # ============================================================
