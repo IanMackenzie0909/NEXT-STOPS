@@ -18,28 +18,25 @@ spec.loader.exec_module(attraction_module)
 
 client = attraction_module.TaipeiAttractionClient()
 cache = {
-    "districts": [],
+    "places": [],
 }
 
 
-def get_districts(force_refresh=False):
-    if cache["districts"] and not force_refresh:
-        return cache["districts"]
-    cache["districts"] = client.get_districts()
-    return cache["districts"]
+def get_places(force_refresh=False):
+    if cache["places"] and not force_refresh:
+        return cache["places"]
+    cache["places"] = client.get_places()
+    return cache["places"]
 
 
-def get_summary(districts):
-    all_attractions = [
-        attraction
-        for district in districts
-        for attraction in district.get("attractions", [])
-    ]
+def get_summary(places):
     return {
-        "district_count": len(districts),
-        "attraction_count": len(all_attractions),
-        "theme_count": len({district.get("theme", "") for district in districts if district.get("theme")}),
-        "latest_import": max((district.get("import_time", "") for district in districts), default=""),
+        "place_count": len(places),
+        "attraction_count": len([place for place in places if place.get("type") == "attraction"]),
+        "event_count": len([place for place in places if place.get("type") == "event"]),
+        "district_count": len({place.get("district", "") for place in places if place.get("district")}),
+        "category_count": len({place.get("category", "") for place in places if place.get("category")}),
+        "latest_modified": max((place.get("modified", "") for place in places), default=""),
     }
 
 
@@ -76,12 +73,16 @@ class AttractionHandler(SimpleHTTPRequestHandler):
             query = params.get("q", [""])[0]
             refresh = params.get("refresh", [""])[0] == "1"
             try:
-                districts = get_districts(force_refresh=refresh)
-                filtered = attraction_module.search_districts(districts, query)
+                places = get_places(force_refresh=refresh)
+                filtered = attraction_module.search_places(places, query)
                 self.send_json({
-                    "source": attraction_module.DATASET_URL,
+                    "source": {
+                        "attractions": attraction_module.ATTRACTIONS_URL,
+                        "events": attraction_module.EVENTS_URL,
+                    },
                     "summary": get_summary(filtered),
-                    "districts": filtered,
+                    "places": filtered,
+                    "districts": attraction_module.group_places_by_district(filtered),
                 })
             except attraction_module.TaipeiOpenDataError as exc:
                 self.send_error_json(str(exc), status=429)

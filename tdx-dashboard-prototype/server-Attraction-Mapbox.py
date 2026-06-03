@@ -28,7 +28,7 @@ spec.loader.exec_module(attraction_module)
 
 client = attraction_module.TaipeiAttractionClient()
 cache = {
-    "districts": [],
+    "places": [],
 }
 
 
@@ -49,24 +49,21 @@ def get_mapbox_token():
     return os.getenv("MAPBOX_ACCESS_TOKEN") or DEFAULT_MAPBOX_TOKEN
 
 
-def get_districts(force_refresh=False):
-    if cache["districts"] and not force_refresh:
-        return cache["districts"]
-    cache["districts"] = client.get_districts()
-    return cache["districts"]
+def get_places(force_refresh=False):
+    if cache["places"] and not force_refresh:
+        return cache["places"]
+    cache["places"] = client.get_places()
+    return cache["places"]
 
 
-def get_summary(districts):
-    all_attractions = [
-        attraction
-        for district in districts
-        for attraction in district.get("attractions", [])
-    ]
+def get_summary(places):
     return {
-        "district_count": len(districts),
-        "attraction_count": len(all_attractions),
-        "theme_count": len({district.get("theme", "") for district in districts if district.get("theme")}),
-        "latest_import": max((district.get("import_time", "") for district in districts), default=""),
+        "place_count": len(places),
+        "attraction_count": len([place for place in places if place.get("type") == "attraction"]),
+        "event_count": len([place for place in places if place.get("type") == "event"]),
+        "district_count": len({place.get("district", "") for place in places if place.get("district")}),
+        "category_count": len({place.get("category", "") for place in places if place.get("category")}),
+        "latest_modified": max((place.get("modified", "") for place in places), default=""),
     }
 
 
@@ -140,14 +137,42 @@ def geocode_destination(query):
     }
 
 
-def calculate_google_route(origin, destination_query, mode):
-    destination = geocode_destination(destination_query)
+def valid_coordinate_pair(value):
+    if not isinstance(value, dict):
+        return False
+    try:
+        float(value.get("lat"))
+        float(value.get("lng"))
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def calculate_google_route(origin, destination_query, mode, destination_location=None):
+    if valid_coordinate_pair(destination_location):
+        destination = {
+            "address": destination_location.get("address") or destination_query,
+            "place_id": "",
+            "location": {
+                "lat": float(destination_location["lat"]),
+                "lng": float(destination_location["lng"]),
+            },
+        }
+        directions_destination = f"{destination['location']['lat']},{destination['location']['lng']}"
+    else:
+        destination = geocode_destination(destination_query)
+        directions_destination = (
+            f"place_id:{destination['place_id']}"
+            if destination["place_id"]
+            else destination_query
+        )
+
     google_mode = TRAVEL_MODES.get(mode, "transit")
     route_payload = google_request(
         GOOGLE_DIRECTIONS_URL,
         {
             "origin": f"{origin['lat']},{origin['lng']}",
-            "destination": f"place_id:{destination['place_id']}" if destination["place_id"] else destination_query,
+            "destination": directions_destination,
             "mode": google_mode,
             "region": "tw",
             "language": "zh-TW",
@@ -221,12 +246,16 @@ class AttractionMapboxHandler(SimpleHTTPRequestHandler):
             query = params.get("q", [""])[0]
             refresh = params.get("refresh", [""])[0] == "1"
             try:
-                districts = get_districts(force_refresh=refresh)
-                filtered = attraction_module.search_districts(districts, query)
+                places = get_places(force_refresh=refresh)
+                filtered = attraction_module.search_places(places, query)
                 self.send_json({
-                    "source": attraction_module.DATASET_URL,
+                    "source": {
+                        "attractions": attraction_module.ATTRACTIONS_URL,
+                        "events": attraction_module.EVENTS_URL,
+                    },
                     "summary": get_summary(filtered),
-                    "districts": filtered,
+                    "places": filtered,
+                    "districts": attraction_module.group_places_by_district(filtered),
                 })
             except attraction_module.TaipeiOpenDataError as exc:
                 self.send_error_json(str(exc), status=429)
@@ -250,16 +279,17 @@ class AttractionMapboxHandler(SimpleHTTPRequestHandler):
                 payload = self.read_json_body()
                 origin = payload.get("origin") or {}
                 destination_query = payload.get("destination_query", "").strip()
+                destination_location = payload.get("destination") or {}
                 mode = payload.get("mode", "TRANSIT")
 
                 if not origin.get("lat") or not origin.get("lng"):
                     self.send_error_json("origin.lat and origin.lng are required", status=400)
                     return
-                if not destination_query:
-                    self.send_error_json("destination_query is required", status=400)
+                if not destination_query and not valid_coordinate_pair(destination_location):
+                    self.send_error_json("destination_query or destination lat/lng is required", status=400)
                     return
 
-                route = calculate_google_route(origin, destination_query, mode)
+                route = calculate_google_route(origin, destination_query, mode, destination_location)
                 self.send_json(route)
             except GoogleMapsBackendError as exc:
                 self.send_error_json(str(exc), status=502)

@@ -60,6 +60,38 @@ function flattenAttractions(districts) {
   );
 }
 
+function normalizePlaces(data) {
+  if (Array.isArray(data.places)) {
+    return data.places.map((place) => ({
+      id: place.id,
+      name: place.name,
+      district: place.district || "未標示行政區",
+      theme: place.category || place.theme || place.type_label || "",
+      type: place.type || "attraction",
+      typeLabel: place.type_label || "景點",
+      address: place.address || "",
+      lat: Number.isFinite(Number(place.lat)) ? Number(place.lat) : null,
+      lng: Number.isFinite(Number(place.lng)) ? Number(place.lng) : null,
+      begin: place.begin || "",
+      end: place.end || "",
+      url: place.url || "",
+      query: place.query || `${place.name} ${place.address || place.district || ""} 台北市`,
+    }));
+  }
+
+  return flattenAttractions(data.districts || []).map((place) => ({
+    ...place,
+    type: "attraction",
+    typeLabel: "景點",
+    address: "",
+    lat: null,
+    lng: null,
+    begin: "",
+    end: "",
+    url: "",
+  }));
+}
+
 function formatOriginLabel(position, accuracy, sourceLabel) {
   const accuracyText = Number.isFinite(accuracy) ? `，約 ${Math.round(accuracy)}m` : "";
   return `${sourceLabel}: ${position.lat.toFixed(5)}, ${position.lng.toFixed(5)}${accuracyText}`;
@@ -200,7 +232,7 @@ async function loadAttractions({ refresh = false } = {}) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Cannot load attractions");
 
-    state.attractions = flattenAttractions(data.districts);
+    state.attractions = normalizePlaces(data);
     if (!state.attractions.some((item) => item.id === state.selectedAttraction?.id)) {
       state.selectedAttraction = null;
       elements.selectedDestination.textContent = "尚未選擇目的地";
@@ -229,7 +261,8 @@ function renderAttractions() {
   for (const attraction of state.attractions) {
     const option = document.createElement("option");
     option.value = attraction.id;
-    option.textContent = `${attraction.name} / ${attraction.district}`;
+    const meta = [attraction.typeLabel, attraction.district, attraction.theme].filter(Boolean).join(" / ");
+    option.textContent = `${attraction.name} / ${meta}`;
     option.selected = state.selectedAttraction?.id === attraction.id;
     elements.attractionSelect.append(option);
   }
@@ -237,7 +270,7 @@ function renderAttractions() {
 
 function selectAttraction(attraction) {
   state.selectedAttraction = attraction;
-  elements.selectedDestination.textContent = `${attraction.name} / ${attraction.district}`;
+  elements.selectedDestination.textContent = `${attraction.name} / ${attraction.typeLabel} / ${attraction.district}`;
   resetRouteSummary();
   renderAttractions();
   planRoute();
@@ -452,6 +485,11 @@ async function planRoute() {
       body: JSON.stringify({
         origin: state.origin,
         destination_query: state.selectedAttraction.query,
+        destination: {
+          lat: state.selectedAttraction.lat,
+          lng: state.selectedAttraction.lng,
+          address: state.selectedAttraction.address,
+        },
         mode: state.travelMode,
       }),
     });
