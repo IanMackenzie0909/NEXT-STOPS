@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { getContext, getMapboxConfig, getPlace, getRoute, googleDirectionsUrl } from "../api/nextStopsApi";
 import IconGlyph from "./IconGlyph.vue";
 import { LOCATION_FALLBACK_LABEL } from "../constants";
-import { budgetLabel, commuteParts, weatherChips } from "../utils/formatters";
+import { aqiChip, budgetLabel, commuteParts, openingLabel, weatherChips } from "../utils/formatters";
 
 const props = defineProps({
   placeId: { type: String, required: true },
@@ -23,6 +23,8 @@ const travelTime = computed(() => place.value?.matched_travel_time ?? place.valu
 const commute = computed(() => routeData.value?.best || place.value?.commute || null);
 const commuteInfo = computed(() => commuteParts(commute.value, travelTime.value));
 const detailWeatherChips = computed(() => weatherChips(context.value, place.value?.weather_summary));
+const detailAqiChip = computed(() => aqiChip(context.value, place.value?.aqi_value, place.value?.aqi_status));
+const backupOptions = computed(() => Array.isArray(place.value?.backup_options) ? place.value.backup_options.filter(Boolean).slice(0, 3) : []);
 const origin = computed(() => (
   props.criteria.lat !== null && props.criteria.lat !== undefined && props.criteria.lon !== null && props.criteria.lon !== undefined
     ? { lat: props.criteria.lat, lon: props.criteria.lon }
@@ -255,12 +257,22 @@ watch(() => props.placeId, () => {
               <small>{{ commuteInfo.mode }}</small>
             </span>
             <span><strong>{{ budgetLabel(place.budget) }}</strong><small>預算</small></span>
+            <span class="info-chip status-chip">
+              <IconGlyph name="spark" />
+              <strong>{{ openingLabel(place) }}</strong>
+              <small>營業狀態</small>
+            </span>
             <span><strong>{{ place.score }}%</strong><small>Match</small></span>
           </div>
           <div class="weather-chip-grid" aria-label="即時天氣">
             <span v-for="item in detailWeatherChips" :key="item.key" class="weather-chip" :class="item.className">
               <IconGlyph :name="item.icon" />
               <strong>{{ item.label }}</strong>
+            </span>
+            <span class="weather-chip aqi-chip" :class="detailAqiChip.className">
+              <IconGlyph :name="detailAqiChip.icon" />
+              <strong>{{ detailAqiChip.label }}</strong>
+              <small>{{ detailAqiChip.detail }}</small>
             </span>
           </div>
         </section>
@@ -269,6 +281,23 @@ watch(() => props.placeId, () => {
           <div><strong>Why now</strong><span>{{ place.reason }}</span></div>
           <div><strong>Route</strong><span>{{ place.route_hint }}</span></div>
           <div><strong>Start</strong><span>{{ criteria.locationLabel || LOCATION_FALLBACK_LABEL }}</span></div>
+        </section>
+
+        <section class="backup-list">
+          <strong>Nearby backups</strong>
+          <template v-if="backupOptions.length">
+            <button
+              v-for="option in backupOptions"
+              :key="option.id || option.name"
+              class="backup-item"
+              type="button"
+              @click="option.id && emit('navigate', `/place/${option.id}`)"
+            >
+              <span>{{ option.name }}</span>
+              <small>{{ option.category || "備案" }}</small>
+            </button>
+          </template>
+          <p v-else>目前沒有足夠資料產生附近備案；可先用 Google Maps 查看周邊。</p>
         </section>
 
         <div class="action-row">

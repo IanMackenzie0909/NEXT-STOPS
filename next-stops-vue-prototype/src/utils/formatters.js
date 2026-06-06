@@ -77,6 +77,43 @@ export function weatherChips(context, fallbackSummary = "") {
   return chips;
 }
 
+export function aqiChip(context, fallbackValue = 65, fallbackStatus = "大台北") {
+  const air = context?.air_quality || {};
+  const value = air.aqi ?? (fallbackValue === "--" || fallbackValue === "unknown" ? 65 : fallbackValue);
+  const status = air.status_kind || air.status || fallbackStatus;
+  const numeric = Number(value);
+  let tone = aqiToneFromStatus(status);
+  if (Number.isFinite(numeric)) {
+    if (numeric <= 50) tone = "good";
+    else if (numeric <= 100) tone = "moderate";
+    else if (numeric <= 150) tone = "sensitive";
+    else if (numeric <= 200) tone = "unhealthy";
+    else if (numeric <= 300) tone = "very-unhealthy";
+    else tone = "hazardous";
+  }
+  return {
+    key: "aqi",
+    icon: "aqi",
+    label: Number.isFinite(numeric) ? `AQI ${numeric}` : "AQI --",
+    detail: statusLabel(air.status || status),
+    className: `aqi-${tone}`,
+  };
+}
+
+export function openingLabel(place) {
+  if (place?.open_now === false) return "可能未營業";
+  if (place?.open_now === true) return "目前可安排";
+  return "營業狀態待確認";
+}
+
+export function suitabilityLabel(place) {
+  const score = Number(place?.score);
+  if (Number.isFinite(score) && score >= 72) return "很符合當下";
+  if (place?.weather_status === "watch") return "天氣需留意";
+  if (Number.isFinite(score) && score < 55) return "可當備選";
+  return "初步適合";
+}
+
 export function budgetLabel(value) {
   if (value === "low") return "低消費";
   if (value === "flexible") return "預算彈性";
@@ -117,4 +154,27 @@ function weatherConditionIcon(condition, rainPercent) {
   if (/晴|sun|clear/i.test(condition)) return "sun";
   if (/陰|雲|cloud|overcast/i.test(condition)) return "cloud";
   return "cloud";
+}
+
+function statusLabel(status) {
+  const text = String(status || "").toLowerCase();
+  if (text === "good" || /良好/.test(status)) return "良好";
+  if (text === "moderate" || /普通/.test(status)) return "普通";
+  if (text === "sensitive" || /敏感/.test(status)) return "敏感";
+  if (text === "unhealthy" || /所有|不健康/.test(status)) return "不健康";
+  if (text === "very_unhealthy" || text === "very-unhealthy" || /非常/.test(status)) return "非常不健康";
+  if (text === "hazardous" || /危害|危險/.test(status)) return "危害";
+  if (text === "poor" || /差|敏感|不健康/.test(status)) return "需留意";
+  return status || "待確認";
+}
+
+function aqiToneFromStatus(status) {
+  const text = String(status || "").toLowerCase().replace("_", "-");
+  if (text === "good" || /良好/.test(status)) return "good";
+  if (text === "moderate" || /普通/.test(status)) return "moderate";
+  if (text === "sensitive" || /敏感/.test(status)) return "sensitive";
+  if (text === "unhealthy" || /所有族群|不健康/.test(status)) return "unhealthy";
+  if (text === "very-unhealthy" || /非常/.test(status)) return "very-unhealthy";
+  if (text === "hazardous" || /危害|危險/.test(status)) return "hazardous";
+  return "unknown";
 }

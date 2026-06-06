@@ -74,6 +74,13 @@ class WeatherAQIClient:
             except Exception as exc:
                 errors[label] = str(exc)
 
+        if not aqi:
+            try:
+                aqi = self.aqi_client.metro_taipei_aqi()
+                errors.pop("aqi", None)
+            except Exception as exc:
+                errors["aqi_fallback"] = str(exc)
+
         if uv and current.get("station") and not uv.get("station"):
             uv["station"] = current.get("station")
 

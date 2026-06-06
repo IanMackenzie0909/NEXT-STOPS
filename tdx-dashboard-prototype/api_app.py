@@ -585,6 +585,40 @@ def init_recommendation_db() -> None:
             """
         )
         db.execute("CREATE INDEX IF NOT EXISTS idx_recommendation_results_request ON recommendation_results(request_id)")
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS saved_places (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                place_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                category TEXT,
+                address TEXT,
+                lat REAL,
+                lng REAL,
+                note TEXT,
+                place_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(session_id, place_id)
+            )
+            """
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_saved_places_session ON saved_places(session_id)")
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS recommendation_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                request_id TEXT,
+                place_id TEXT NOT NULL,
+                feedback_type TEXT NOT NULL,
+                note TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_feedback_session ON recommendation_feedback(session_id)")
 
 
 def record_recommendation(
@@ -657,6 +691,141 @@ def fetch_recommendation_record(request_id: str) -> dict[str, Any] | None:
         "count": request["result_count"],
         "results": [json.loads(row["result_json"]) for row in rows],
     }
+
+
+def saved_place_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    place = json.loads(row["place_json"])
+    return {
+        **place,
+        "id": row["place_id"],
+        "name": row["name"],
+        "category": row["category"],
+        "address": row["address"],
+        "lat": row["lat"],
+        "lng": row["lng"],
+        "note": row["note"] or "",
+        "saved_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def list_saved_places(session_id: str) -> list[dict[str, Any]]:
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        rows = db.execute(
+            "SELECT * FROM saved_places WHERE session_id = ? ORDER BY updated_at DESC",
+            (session_id,),
+        ).fetchall()
+    return [saved_place_from_row(row) for row in rows]
+
+
+def upsert_saved_place(payload: dict[str, Any]) -> dict[str, Any]:
+    session_id = str(payload.get("session_id") or "").strip()
+    place = payload.get("place") or payload
+    if not session_id:
+        raise ValueError("session_id is required")
+    if not isinstance(place, dict) or not place.get("id") or not place.get("name"):
+        raise ValueError("place.id and place.name are required")
+
+    place_id = str(place["id"])
+    now = now_iso()
+    lat = to_float(place.get("lat"))
+    lng = to_float(place.get("lng") if place.get("lng") is not None else place.get("lon"))
+    note = str(payload.get("note") if payload.get("note") is not None else place.get("note") or "")
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        db.execute(
+            """
+            INSERT INTO saved_places (
+                session_id, place_id, name, category, address, lat, lng, note, place_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id, place_id) DO UPDATE SET
+                name = excluded.name,
+                category = excluded.category,
+                address = excluded.address,
+                lat = excluded.lat,
+                lng = excluded.lng,
+                note = excluded.note,
+                place_json = excluded.place_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                session_id,
+                place_id,
+                str(place.get("name") or ""),
+                str(place.get("category") or ""),
+                str(place.get("address") or ""),
+                lat,
+                lng,
+                note,
+                json.dumps({**place, "note": note}, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        row = db.execute(
+            "SELECT * FROM saved_places WHERE session_id = ? AND place_id = ?",
+            (session_id, place_id),
+        ).fetchone()
+    return saved_place_from_row(row)
+
+
+def update_saved_place_note(session_id: str, place_id: str, note: str) -> dict[str, Any] | None:
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        db.execute(
+            "UPDATE saved_places SET note = ?, updated_at = ? WHERE session_id = ? AND place_id = ?",
+            (note, now_iso(), session_id, place_id),
+        )
+        row = db.execute(
+            "SELECT * FROM saved_places WHERE session_id = ? AND place_id = ?",
+            (session_id, place_id),
+        ).fetchone()
+    return saved_place_from_row(row) if row else None
+
+
+def remove_saved_place(session_id: str, place_id: str) -> dict[str, Any]:
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        cursor = db.execute(
+            "DELETE FROM saved_places WHERE session_id = ? AND place_id = ?",
+            (session_id, place_id),
+        )
+    return {"ok": True, "deleted": cursor.rowcount}
+
+
+def record_feedback(payload: dict[str, Any]) -> dict[str, Any]:
+    session_id = str(payload.get("session_id") or "").strip()
+    place_id = str(payload.get("place_id") or "").strip()
+    feedback_type = str(payload.get("feedback_type") or "").strip()
+    if not session_id:
+        raise ValueError("session_id is required")
+    if not place_id:
+        raise ValueError("place_id is required")
+    if not feedback_type:
+        raise ValueError("feedback_type is required")
+
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        cursor = db.execute(
+            """
+            INSERT INTO recommendation_feedback (
+                session_id, request_id, place_id, feedback_type, note, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                payload.get("request_id"),
+                place_id,
+                feedback_type,
+                payload.get("note"),
+                now_iso(),
+            ),
+        )
+    return {"ok": True, "id": cursor.lastrowid}
 
 
 def criteria_location(criteria: dict[str, Any]) -> dict[str, Any]:
@@ -1251,6 +1420,38 @@ def api_recommendation_record(request_id: str):
     if record is None:
         raise HTTPException(status_code=404, detail="Recommendation request not found")
     return record
+
+
+@app.get("/api/saved-places")
+def api_saved_places(session_id: str = Query(...)):
+    return run_or_raise(lambda: {"saved": list_saved_places(session_id.strip())})
+
+
+@app.post("/api/saved-places")
+def api_save_place(payload: dict[str, Any] | None = Body(default=None)):
+    return run_or_raise(lambda: upsert_saved_place(payload or {}))
+
+
+@app.patch("/api/saved-places/{place_id}")
+def api_update_saved_place(place_id: str, payload: dict[str, Any] | None = Body(default=None)):
+    data = payload or {}
+    session_id = str(data.get("session_id") or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+    updated = run_or_raise(lambda: update_saved_place_note(session_id, place_id, str(data.get("note") or "")))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Saved place not found")
+    return updated
+
+
+@app.delete("/api/saved-places/{place_id}")
+def api_delete_saved_place(place_id: str, session_id: str = Query(...)):
+    return run_or_raise(lambda: remove_saved_place(session_id.strip(), place_id))
+
+
+@app.post("/api/recommendation-feedback")
+def api_recommendation_feedback(payload: dict[str, Any] | None = Body(default=None)):
+    return run_or_raise(lambda: record_feedback(payload or {}))
 
 
 def get_bus_city(city: str | None = None) -> str:

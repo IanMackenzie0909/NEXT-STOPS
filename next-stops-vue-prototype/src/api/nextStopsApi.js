@@ -43,10 +43,38 @@ export async function getPlace(id) {
 }
 
 export async function getSavedPlaces() {
-  return loadJson(SAVED_KEY, []);
+  try {
+    const data = await fetchJson(DATA_API_BASE, `/api/saved-places?session_id=${encodeURIComponent(getSessionId())}`);
+    const saved = (data.saved || []).map(normalizeRecommendationResult);
+    saveJson(SAVED_KEY, saved);
+    rememberPlaces(saved);
+    return saved;
+  } catch {
+    return loadJson(SAVED_KEY, []);
+  }
 }
 
 export async function savePlace(item) {
+  const payload = {
+    session_id: getSessionId(),
+    place: item,
+    note: item.note || "",
+  };
+  try {
+    const savedItem = normalizeRecommendationResult(await fetchJson(DATA_API_BASE, "/api/saved-places", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }));
+    const localSaved = loadJson(SAVED_KEY, []);
+    saveJson(SAVED_KEY, [savedItem, ...localSaved.filter((entry) => entry.id !== savedItem.id)]);
+    rememberPlaces([savedItem]);
+    return savedItem;
+  } catch {
+    return savePlaceLocal(item);
+  }
+}
+
+function savePlaceLocal(item) {
   const saved = loadJson(SAVED_KEY, []);
   const next = [{ ...item, created_at: item.created_at || new Date().toISOString() }, ...saved.filter((entry) => entry.id !== item.id)];
   saveJson(SAVED_KEY, next);
@@ -54,14 +82,49 @@ export async function savePlace(item) {
 }
 
 export async function updateSavedPlace(id, body) {
+  try {
+    const savedItem = normalizeRecommendationResult(await fetchJson(DATA_API_BASE, `/api/saved-places/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ session_id: getSessionId(), ...body }),
+    }));
+    const next = loadJson(SAVED_KEY, []).map((item) => (item.id === id ? savedItem : item));
+    saveJson(SAVED_KEY, next);
+    rememberPlaces([savedItem]);
+    return savedItem;
+  } catch {
+    return updateSavedPlaceLocal(id, body);
+  }
+}
+
+function updateSavedPlaceLocal(id, body) {
   const next = loadJson(SAVED_KEY, []).map((item) => (item.id === id ? { ...item, ...body } : item));
   saveJson(SAVED_KEY, next);
   return next.find((item) => item.id === id) || null;
 }
 
 export async function deleteSavedPlace(id) {
+  try {
+    await fetchJson(DATA_API_BASE, `/api/saved-places/${encodeURIComponent(id)}?session_id=${encodeURIComponent(getSessionId())}`, {
+      method: "DELETE",
+    });
+  } catch {
+    // Keep local prototype behavior available when the API is offline.
+  }
   saveJson(SAVED_KEY, loadJson(SAVED_KEY, []).filter((item) => item.id !== id));
   return { ok: true };
+}
+
+export async function submitRecommendationFeedback(placeId, feedbackType, requestId = "", note = "") {
+  return fetchJson(DATA_API_BASE, "/api/recommendation-feedback", {
+    method: "POST",
+    body: JSON.stringify({
+      session_id: getSessionId(),
+      request_id: requestId,
+      place_id: placeId,
+      feedback_type: feedbackType,
+      note,
+    }),
+  });
 }
 
 export async function getContext(lat, lon) {
@@ -109,11 +172,15 @@ async function searchPlaces(params) {
 }
 
 function normalizeRecommendationResult(place) {
+  const scoreValue = Number(place.score ?? place.algorithm?.score);
+  const score = Number.isFinite(scoreValue)
+    ? Math.round(scoreValue <= 1 ? scoreValue * 100 : scoreValue)
+    : 0;
   return {
     ...place,
     lng: place.lon ?? place.lng,
     lon: place.lon ?? place.lng,
-    score: Math.round(Number(place.score ?? place.algorithm?.score * 100 ?? 0)),
+    score,
     matched_travel_time: place.commute?.duration_seconds
       ? Math.round(place.commute.duration_seconds / 60)
       : place.matched_travel_time ?? place.travel_time_minutes ?? 28,

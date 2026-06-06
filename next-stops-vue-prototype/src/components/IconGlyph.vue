@@ -60,6 +60,20 @@ defineProps({
       <path d="M4 13h14a3 3 0 1 1-3 3"></path>
       <path d="M4 18h7"></path>
     </g>
+    <g v-else-if="name === 'air'">
+      <path d="M4 9h9a2.5 2.5 0 1 0-2.5-2.5"></path>
+      <path d="M4 14h14a2.5 2.5 0 1 1-2.5 2.5"></path>
+      <path d="M4 19h6"></path>
+      <path d="M7 5h1"></path>
+    </g>
+    <g v-else-if="name === 'aqi'">
+      <path d="M5 17a7 7 0 1 1 14 0"></path>
+      <path d="M8 17h8"></path>
+      <path d="M12 17l3-5"></path>
+      <path d="M7.8 12.2l-1.4-.8"></path>
+      <path d="M12 10V8.4"></path>
+      <path d="M16.2 12.2l1.4-.8"></path>
+    </g>
     <g v-else-if="name === 'thermometer'">
       <path d="M14 14.8V5a2 2 0 1 0-4 0v9.8a4 4 0 1 0 4 0z"></path>
       <path d="M12 9v7"></path>
@@ -72,6 +86,15 @@ defineProps({
     <g v-else-if="name === 'plus'">
       <path d="M12 5v14"></path>
       <path d="M5 12h14"></path>
+    </g>
+    <g v-else-if="name === 'spark'">
+      <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z"></path>
+      <path d="M18 16l.8 2.2L21 19l-2.2.8L18 22l-.8-2.2L15 19l2.2-.8L18 16z"></path>
+    </g>
+    <g v-else-if="name === 'sound'">
+      <path d="M5 15H3V9h2l5-4v14l-5-4z"></path>
+      <path d="M14 9.5a4 4 0 0 1 0 5"></path>
+      <path d="M17 7a8 8 0 0 1 0 10"></path>
     </g>
     <g v-else>
       <circle cx="12" cy="12" r="8"></circle>

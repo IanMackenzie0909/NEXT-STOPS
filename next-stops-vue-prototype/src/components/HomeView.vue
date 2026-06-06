@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from "vue";
 import AppIcon from "./AppIcon.vue";
+import IconGlyph from "./IconGlyph.vue";
 import { BUDGET_LABELS, LOCATION_FALLBACK_LABEL, MOODS, WEATHER_LABELS } from "../constants";
 import { formatTime } from "../utils/formatters";
 
@@ -9,8 +10,9 @@ const props = defineProps({
   loading: { type: Boolean, default: false },
   locating: { type: Boolean, default: false },
   savedCount: { type: Number, default: 0 },
+  ambientEnabled: { type: Boolean, default: false },
 });
-const emit = defineEmits(["update:criteria", "find", "locate", "navigate"]);
+const emit = defineEmits(["update:criteria", "find", "locate", "navigate", "toggle-ambient"]);
 
 const locationText = computed(() => {
   if (props.criteria.locationSource === "gps" && props.criteria.lat && props.criteria.lon) {
@@ -31,8 +33,8 @@ function patch(updates) {
         <p class="muted">Good morning</p>
         <h1>Where to next?</h1>
       </div>
-      <button class="icon-button" type="button" title="Today plan" @click="emit('navigate', '/saved')">
-        ✓<i v-if="savedCount">{{ savedCount }}</i>
+      <button class="icon-button sound-button" :class="{ active: ambientEnabled }" type="button" title="Ambient sound" @click="emit('toggle-ambient')">
+        <IconGlyph name="sound" />
       </button>
     </header>
 
@@ -73,6 +75,7 @@ function patch(updates) {
         <div>
           <span>出發定位</span>
           <strong>{{ locationText }}</strong>
+          <small v-if="criteria.locationSource !== 'gps'">目前使用預設起點；按 Use location 可改用即時定位。</small>
         </div>
         <button class="ghost-action compact" type="button" :disabled="locating" @click="emit('locate')">
           {{ locating ? "Locating..." : "Use location" }}

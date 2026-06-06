@@ -11,6 +11,23 @@ ROOT = Path(__file__).resolve().parent
 
 MOENV_AQI_URL = "https://data.moenv.gov.tw/api/v2/aqx_p_432"
 DEFAULT_TIMEOUT_SECONDS = 8
+DEFAULT_METRO_TAIPEI_AQI = {
+    "site": "大台北代表值",
+    "county": "臺北市 / 新北市 / 基隆市",
+    "station_distance_meters": None,
+    "aqi": 65,
+    "status": "普通",
+    "status_kind": "moderate",
+    "pollutant": "",
+    "pm25": None,
+    "pm10": None,
+    "wind_speed_mps": None,
+    "wind_direction_degrees": None,
+    "publish_time": "",
+    "source": "prototype metro Taipei fallback",
+    "fallback_scope": "metro_taipei_default",
+    "station_count": 0,
+}
 
 
 def load_root_env():
@@ -109,6 +126,61 @@ def first_usable_aqi_record(records):
     return records[0] if records else None
 
 
+def county_name(item):
+    return normalize_text(item.get("county") or item.get("County") or "")
+
+
+def metro_taipei_aqi(records):
+    metro_counties = {"臺北市", "台北市", "新北市", "基隆市"}
+    usable = []
+    for item in records:
+        if county_name(item) not in metro_counties:
+            continue
+        aqi_value = parse_int(item.get("aqi") or item.get("AQI"), None)
+        if aqi_value is None:
+            continue
+        usable.append((item, aqi_value))
+    if not usable:
+        return None
+
+    average = round(sum(value for _, value in usable) / len(usable))
+    status_kind = aqi_status_kind("", average)
+    status_labels = {
+        "good": "良好",
+        "moderate": "普通",
+        "sensitive": "對敏感族群不健康",
+        "unhealthy": "對所有族群不健康",
+        "very_unhealthy": "非常不健康",
+        "hazardous": "危害",
+    }
+    pm25_values = [normalize_number(item.get("pm2.5") or item.get("PM2.5") or item.get("pm2.5_avg") or item.get("PM2.5_AVG")) for item, _ in usable]
+    pm10_values = [normalize_number(item.get("pm10") or item.get("PM10") or item.get("pm10_avg") or item.get("PM10_AVG")) for item, _ in usable]
+    wind_values = [normalize_number(item.get("wind_speed") or item.get("WIND_SPEED")) for item, _ in usable]
+    return {
+        "site": "大台北平均",
+        "county": "臺北市 / 新北市 / 基隆市",
+        "station_distance_meters": None,
+        "aqi": average,
+        "status": status_labels.get(status_kind, "待確認"),
+        "status_kind": status_kind,
+        "pollutant": "",
+        "pm25": average_number([value for value in pm25_values if value is not None]),
+        "pm10": average_number([value for value in pm10_values if value is not None]),
+        "wind_speed_mps": average_number([value for value in wind_values if value is not None]),
+        "wind_direction_degrees": None,
+        "publish_time": normalize_text(usable[0][0].get("publishtime") or usable[0][0].get("PublishTime") or ""),
+        "source": "MOENV Open Data",
+        "fallback_scope": "metro_taipei",
+        "station_count": len(usable),
+    }
+
+
+def average_number(values):
+    if not values:
+        return None
+    return round(sum(values) / len(values), 1)
+
+
 def aqi_status_kind(status, aqi_value=None):
     status_text = normalize_text(status).replace(" ", "").lower()
     if status_text in ("good", "良好"):
@@ -166,13 +238,28 @@ class MOENVAQIClient:
         return records
 
     def nearest_aqi(self, lat, lon):
-        records = self.records()
+        try:
+            records = self.records()
+        except Exception:
+            return dict(DEFAULT_METRO_TAIPEI_AQI)
         nearest = nearest_item(records, lat, lon, aqi_coordinates)
+        if nearest is None:
+            metro = metro_taipei_aqi(records)
+            if metro:
+                return metro
         item = nearest["item"] if nearest else first_usable_aqi_record(records)
         if not item:
             raise RuntimeError("MOENV AQI returned no usable record")
 
         aqi_value = parse_int(item.get("aqi") or item.get("AQI"), None)
+        if aqi_value is None:
+            metro = metro_taipei_aqi(records)
+            if metro:
+                return metro
+            item = first_usable_aqi_record(records)
+            aqi_value = parse_int(item.get("aqi") or item.get("AQI"), None) if item else None
+        if aqi_value is None:
+            raise RuntimeError("MOENV AQI returned no usable AQI value")
         status = normalize_text(item.get("status") or item.get("Status") or "")
         return {
             "site": normalize_text(item.get("sitename") or item.get("SiteName") or ""),
@@ -189,6 +276,16 @@ class MOENVAQIClient:
             "publish_time": normalize_text(item.get("publishtime") or item.get("PublishTime") or ""),
             "source": "MOENV Open Data",
         }
+
+    def metro_taipei_aqi(self):
+        try:
+            records = self.records()
+        except Exception:
+            return dict(DEFAULT_METRO_TAIPEI_AQI)
+        metro = metro_taipei_aqi(records)
+        if not metro:
+            raise RuntimeError("MOENV AQI returned no usable metro Taipei record")
+        return metro
 
     def aqi(self, lat, lon):
         return self.nearest_aqi(lat, lon)

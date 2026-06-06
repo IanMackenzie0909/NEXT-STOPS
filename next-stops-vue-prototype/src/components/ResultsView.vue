@@ -1,23 +1,35 @@
 <script setup>
 import IconGlyph from "./IconGlyph.vue";
 import { LOCATION_FALLBACK_LABEL, MOODS } from "../constants";
-import { budgetLabel, commuteParts, weatherChips } from "../utils/formatters";
+import { aqiChip, budgetLabel, commuteParts, suitabilityLabel, weatherChips } from "../utils/formatters";
 
 defineProps({
   criteria: { type: Object, required: true },
   results: { type: Array, required: true },
   savedIds: { type: Array, required: true },
+  feedbackByPlace: { type: Object, default: () => ({}) },
   loading: { type: Boolean, default: false },
   error: { type: String, default: "" },
 });
-const emit = defineEmits(["navigate", "view", "toggle-save", "find"]);
+const emit = defineEmits(["navigate", "view", "toggle-save", "find", "feedback"]);
+
+const FEEDBACK_OPTIONS = [
+  { type: "good_fit", label: "Good fit" },
+  { type: "too_far", label: "Too far" },
+  { type: "not_my_vibe", label: "Not my vibe" },
+  { type: "prefer_indoor", label: "More indoor" },
+];
 
 function commuteInfo(place) {
   return commuteParts(place.commute, place.matched_travel_time ?? place.travel_time_minutes);
 }
 
 function placeWeatherChips(place) {
-  return weatherChips(place.context, place.weather_summary).slice(0, 4);
+  return weatherChips(place.context, place.weather_summary).slice(0, 3);
+}
+
+function placeAqiChip(place) {
+  return aqiChip(place.context, place.aqi_value, place.aqi_status);
 }
 </script>
 
@@ -32,12 +44,25 @@ function placeWeatherChips(place) {
     </header>
 
     <section v-if="loading && !results.length" class="loading-state" aria-live="polite">
-      <div class="loader-calm" aria-hidden="true">
-        <span class="calm-ring one"></span>
-        <span class="calm-ring two"></span>
-        <span class="calm-dot main"></span>
-        <span class="calm-dot drift"></span>
-        <span class="calm-path"></span>
+      <div class="loading-visual" aria-hidden="true">
+        <div class="loader-calm">
+          <span class="calm-ring one"></span>
+          <span class="calm-ring two"></span>
+          <span class="calm-dot main"></span>
+          <span class="calm-dot drift"></span>
+          <span class="calm-path"></span>
+        </div>
+        <div class="route-preview">
+          <span class="route-thread"></span>
+          <i class="node start"></i>
+          <i class="node mid"></i>
+          <i class="node end"></i>
+        </div>
+        <div class="loading-card-stack">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
       </div>
       <h2>正在規劃下一站</h2>
       <p>
@@ -62,6 +87,10 @@ function placeWeatherChips(place) {
           </div>
         </button>
         <div class="badge-row">
+          <span class="badge-chip suitability-chip">
+            <IconGlyph name="spark" />
+            <strong>{{ suitabilityLabel(place) }}</strong>
+          </span>
           <span class="badge-chip commute-badge">
             <IconGlyph :name="commuteInfo(place).icon" />
             <strong>{{ commuteInfo(place).duration }}</strong>
@@ -76,7 +105,24 @@ function placeWeatherChips(place) {
             <IconGlyph :name="item.icon" />
             <strong>{{ item.label }}</strong>
           </span>
+          <span class="badge-chip aqi-chip" :class="placeAqiChip(place).className">
+            <IconGlyph :name="placeAqiChip(place).icon" />
+            <strong>{{ placeAqiChip(place).label }}</strong>
+            <small>{{ placeAqiChip(place).detail }}</small>
+          </span>
           <span>{{ budgetLabel(place.budget) }}</span>
+        </div>
+        <div class="feedback-row" aria-label="推薦回饋">
+          <button
+            v-for="option in FEEDBACK_OPTIONS"
+            :key="option.type"
+            class="feedback-chip"
+            :class="{ selected: feedbackByPlace[place.id] === option.type }"
+            type="button"
+            @click="emit('feedback', place.id, option.type)"
+          >
+            {{ option.label }}
+          </button>
         </div>
         <div class="card-footer">
           <button class="ghost-action" :class="{ saved: savedIds.includes(place.id) }" type="button" @click="emit('toggle-save', place)">

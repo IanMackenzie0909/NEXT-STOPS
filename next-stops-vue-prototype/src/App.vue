@@ -6,7 +6,8 @@ import HomeView from "./components/HomeView.vue";
 import ResultsView from "./components/ResultsView.vue";
 import SavedView from "./components/SavedView.vue";
 import Toast from "./components/Toast.vue";
-import { deleteSavedPlace, getRecommendations, getSavedPlaces, savePlace, updateSavedPlace } from "./api/nextStopsApi";
+import IconGlyph from "./components/IconGlyph.vue";
+import { deleteSavedPlace, getRecommendations, getSavedPlaces, savePlace, submitRecommendationFeedback, updateSavedPlace } from "./api/nextStopsApi";
 import { LOCATION_FALLBACK_LABEL } from "./constants";
 
 const criteria = reactive({
@@ -28,8 +29,14 @@ const saved = ref([]);
 const loading = ref(false);
 const locating = ref(false);
 const recommendationError = ref("");
+const latestRequestId = ref("");
+const feedbackByPlace = ref({});
 const toastMessage = ref("");
+const ambientEnabled = ref(false);
 let toastTimer;
+let audioContext;
+let ambientGain;
+let ambientNodes = [];
 
 const routeName = computed(() => {
   if (route.value.startsWith("/place/")) return "detail";
@@ -115,6 +122,7 @@ async function findStops() {
   try {
     if (criteria.locationSource !== "gps") await locateUser();
     const data = await getRecommendations({ ...criteria });
+    latestRequestId.value = data.request_id || "";
     results.value = data.results || [];
     if (!results.value.length) {
       recommendationError.value = data.request_id
@@ -143,14 +151,16 @@ async function toggleSave(place) {
     return;
   }
   const item = {
+    ...place,
     id: place.id,
     name: place.name,
     category: place.category,
     address: place.address,
     lat: place.lat,
     lng: place.lng,
+    lon: place.lon ?? place.lng,
     score: place.score,
-    note: "",
+    note: place.note || "",
     created_at: new Date().toISOString(),
   };
   const savedItem = await savePlace(item);
@@ -168,6 +178,16 @@ async function updateNote(id, note) {
   await updateSavedPlace(id, { note });
 }
 
+async function submitFeedback(placeId, feedbackType) {
+  feedbackByPlace.value = { ...feedbackByPlace.value, [placeId]: feedbackType };
+  try {
+    await submitRecommendationFeedback(placeId, feedbackType, latestRequestId.value);
+    showToast("已記錄你的偏好");
+  } catch (error) {
+    showToast(`偏好暫時無法送出：${error.message}`);
+  }
+}
+
 function fallbackPlace(id) {
   return results.value.find((place) => place.id === id) || saved.value.find((place) => place.id === id) || null;
 }
@@ -178,6 +198,64 @@ function showToast(message) {
   toastTimer = setTimeout(() => {
     toastMessage.value = "";
   }, 2200);
+}
+
+async function toggleAmbient() {
+  if (ambientEnabled.value) {
+    stopAmbient();
+    return;
+  }
+  try {
+    startAmbient();
+    ambientEnabled.value = true;
+  } catch (error) {
+    showToast(`音景無法啟用：${error.message}`);
+  }
+}
+
+function startAmbient() {
+  const AudioContext = globalThis.AudioContext || globalThis.webkitAudioContext;
+  if (!AudioContext) throw new Error("瀏覽器不支援 Web Audio");
+  audioContext = audioContext || new AudioContext();
+  if (audioContext.state === "suspended") audioContext.resume();
+  ambientGain = audioContext.createGain();
+  ambientGain.gain.setValueAtTime(0.0001, audioContext.currentTime);
+  ambientGain.gain.exponentialRampToValueAtTime(0.035, audioContext.currentTime + 1.6);
+  ambientGain.connect(audioContext.destination);
+  ambientNodes = [196, 246.94, 329.63].map((frequency, index) => {
+    const oscillator = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    oscillator.type = index === 0 ? "sine" : "triangle";
+    oscillator.frequency.value = frequency;
+    gain.gain.value = index === 0 ? 0.48 : 0.18;
+    oscillator.connect(gain);
+    gain.connect(ambientGain);
+    oscillator.start();
+    return { oscillator, gain };
+  });
+}
+
+function stopAmbient() {
+  ambientEnabled.value = false;
+  if (!audioContext || !ambientGain) return;
+  const stopAt = audioContext.currentTime + 0.8;
+  ambientGain.gain.cancelScheduledValues(audioContext.currentTime);
+  ambientGain.gain.setValueAtTime(Math.max(ambientGain.gain.value, 0.0001), audioContext.currentTime);
+  ambientGain.gain.exponentialRampToValueAtTime(0.0001, stopAt);
+  setTimeout(() => {
+    for (const node of ambientNodes) {
+      try {
+        node.oscillator.stop();
+        node.oscillator.disconnect();
+        node.gain.disconnect();
+      } catch {
+        // Oscillators can only be stopped once.
+      }
+    }
+    ambientNodes = [];
+    ambientGain?.disconnect();
+    ambientGain = null;
+  }, 900);
 }
 
 onMounted(() => {
@@ -191,48 +269,69 @@ onMounted(() => {
 <template>
   <div class="app-shell">
     <div class="app-surface">
-      <HomeView
-        v-if="routeName === 'home'"
-        :criteria="criteria"
-        :loading="loading"
-        :locating="locating"
-        :saved-count="saved.length"
-        @update:criteria="updateCriteria"
-        @locate="locateUser"
-        @find="findStops"
-        @navigate="handleNavigate"
-      />
-      <ResultsView
-        v-else-if="routeName === 'results'"
-        :criteria="criteria"
-        :results="results"
-        :saved-ids="savedIds"
-        :loading="loading || locating"
-        :error="recommendationError"
-        @navigate="handleNavigate"
-        @find="findStops"
-        @view="(id) => navigate(`/place/${id}`)"
-        @toggle-save="toggleSave"
-      />
-      <DetailView
-        v-else-if="routeName === 'detail'"
-        :place-id="activePlaceId"
-        :fallback-place="fallbackPlace(activePlaceId)"
-        :criteria="criteria"
-        :saved="savedIds.includes(activePlaceId)"
-        @navigate="navigate"
-        @toggle-save="toggleSave"
-        @toast="showToast"
-      />
-      <SavedView
-        v-else-if="routeName === 'saved'"
-        :saved="saved"
-        @navigate="navigate"
-        @remove="removeSaved"
-        @update-note="updateNote"
-      />
-      <BottomNav :route="route" :saved-count="saved.length" @navigate="handleNavigate" />
-      <Toast :message="toastMessage" />
+      <Transition name="screen-fade" mode="out-in">
+        <HomeView
+          v-if="routeName === 'home'"
+          key="home"
+          :criteria="criteria"
+          :loading="loading"
+          :locating="locating"
+          :saved-count="saved.length"
+          :ambient-enabled="ambientEnabled"
+          @update:criteria="updateCriteria"
+          @locate="locateUser"
+          @find="findStops"
+          @navigate="handleNavigate"
+          @toggle-ambient="toggleAmbient"
+        />
+        <ResultsView
+          v-else-if="routeName === 'results'"
+          key="results"
+          :criteria="criteria"
+          :results="results"
+          :saved-ids="savedIds"
+          :feedback-by-place="feedbackByPlace"
+          :loading="loading || locating"
+          :error="recommendationError"
+          @navigate="handleNavigate"
+          @find="findStops"
+          @view="(id) => navigate(`/place/${id}`)"
+          @toggle-save="toggleSave"
+          @feedback="submitFeedback"
+        />
+        <DetailView
+          v-else-if="routeName === 'detail'"
+          :key="`detail-${activePlaceId}`"
+          :place-id="activePlaceId"
+          :fallback-place="fallbackPlace(activePlaceId)"
+          :criteria="criteria"
+          :saved="savedIds.includes(activePlaceId)"
+          @navigate="navigate"
+          @toggle-save="toggleSave"
+          @toast="showToast"
+        />
+        <SavedView
+          v-else-if="routeName === 'saved'"
+          key="saved"
+          :saved="saved"
+          @navigate="navigate"
+          @remove="removeSaved"
+          @update-note="updateNote"
+        />
+      </Transition>
     </div>
+    <button
+      v-if="routeName !== 'home'"
+      class="ambient-toggle"
+      :class="{ active: ambientEnabled }"
+      type="button"
+      title="Ambient sound"
+      @click="toggleAmbient"
+    >
+      <IconGlyph name="sound" />
+      <span>{{ ambientEnabled ? "Sound on" : "Sound" }}</span>
+    </button>
+    <BottomNav :route="route" :saved-count="saved.length" @navigate="handleNavigate" />
+    <Toast :message="toastMessage" />
   </div>
 </template>
