@@ -61,7 +61,7 @@ FRONTEND_MOOD_TO_ALGORITHM = {
     "date": "date",
     "solo_quiet": "solo",
     "photo": "photo",
-    "rainy_backup": "relax",
+    "rainy_backup": "solo",
     "night_out": "night",
 }
 
@@ -709,6 +709,8 @@ def user_context_from_criteria(criteria: dict[str, Any], context: dict[str, Any]
         ignored_factors.add("budget")
 
     weather_preference = str(criteria.get("weatherPreference") or "any")
+    if mood_key == "rainy_backup":
+        weather_preference = "indoor"
     outdoor_comfort = str(context.get("outdoor_comfort") or "")
     severe_weather = (
         weather_preference == "avoid_rain"
@@ -770,7 +772,7 @@ def display_budget_from_price(price: str) -> str:
 
 def place_environment(category: str, categories: list[str]) -> tuple[bool, bool]:
     blob = " ".join([category, *(categories or [])])
-    indoor = bool(re.search(r"museum|gallery|bookstore|restaurant|cafe|market|博物館|美術館|書店|餐廳|文創", blob))
+    indoor = bool(re.search(r"museum|gallery|bookstore|restaurant|cafe|market|博物館|美術館|書店|餐廳|文創|紀念館|展覽|劇場|影城|會館|主題館|寺|廟|堂", blob))
     outdoor = bool(re.search(r"park|riverside|viewpoint|market|公園|河濱|步道|景觀|夜市|古蹟", blob))
     if not indoor and not outdoor:
         outdoor = True

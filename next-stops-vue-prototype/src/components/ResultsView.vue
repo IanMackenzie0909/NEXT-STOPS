@@ -32,9 +32,12 @@ function placeWeatherChips(place) {
     </header>
 
     <section v-if="loading && !results.length" class="loading-state" aria-live="polite">
-      <div class="loader-orbit" aria-hidden="true">
-        <span></span>
-        <i></i>
+      <div class="loader-calm" aria-hidden="true">
+        <span class="calm-ring one"></span>
+        <span class="calm-ring two"></span>
+        <span class="calm-dot main"></span>
+        <span class="calm-dot drift"></span>
+        <span class="calm-path"></span>
       </div>
       <h2>正在規劃下一站</h2>
       <p>
