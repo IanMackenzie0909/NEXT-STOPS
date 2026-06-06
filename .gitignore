@@ -1,14 +1,21 @@
 NEXT_STOPS_Developer_Documentation.md
 LLM_ENHANCEMENT_PLAN.md
 .vscode/
+.agents/
+.codex/
+.pytest_cache/
 env/
 .venv/
 .env
+.env.*
+!.env.example
 
 *__pycache__/
 
 *.zip
 outputs/
+dist/
+coverage/
 
 next_stops_figma_pack/
 node_modules/
@@ -31,3 +38,20 @@ MRT-Liveboard.xml
 index-mapbox-sample.html
 neglectedfiles/
 *.bat
+
+# Local API caches and generated prototype data
+tdx-dashboard-prototype/taipei_attraction_search_platform/data/
+*.sqlite
+*.sqlite3
+*.db
+
+# Secrets and private credentials
+*.pem
+*.key
+*.p8
+*.p12
+*.crt
+*secret*
+*credentials*
+*token*
+*api_key*

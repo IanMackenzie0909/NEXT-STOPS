@@ -22,7 +22,7 @@ try:
     from fastapi import FastAPI, HTTPException, Query
     from fastapi.middleware.cors import CORSMiddleware
 except ImportError as exc:  # pragma: no cover
-    raise RuntimeError("請先安裝 FastAPI dependencies：pip install -r requirements-api.txt") from exc
+    raise RuntimeError("請先安裝 FastAPI dependencies：pip install -r requirements.txt") from exc
 
 
 ROOT = Path(__file__).resolve().parent
