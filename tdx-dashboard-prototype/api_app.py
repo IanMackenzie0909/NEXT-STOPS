@@ -36,6 +36,7 @@ ATTRACTION_CACHE = ATTRACTION_PLATFORM_ROOT / "data" / "taipei_places.json"
 RECOMMENDATION_DB = Path(os.getenv("NEXT_STOPS_DB_PATH", ROOT / "data" / "next_stops.sqlite3"))
 GOOGLE_DIRECTIONS_URL = "https://maps.googleapis.com/maps/api/directions/json"
 GOOGLE_GEOCODING_URL = "https://maps.googleapis.com/maps/api/geocode/json"
+GOOGLE_PLACE_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
 DEFAULT_MAPBOX_TOKEN = "your_mapbox_access_token"
 MAX_STATION_RESULTS = 300
 TDX_REQUEST_RETRIES = 2
@@ -218,6 +219,7 @@ mrt_tdx = CachedTDX(mrt_module, "TDX_MRT")
 weather_aqi_client = weather_aqi_module.WeatherAQIClient()
 bus_station_cache: dict[str, dict[str, Any]] = {}
 mrt_stations_cache: dict[str, Any] = {"items": [], "fetched_at": None}
+google_place_status_cache: dict[str, dict[str, Any]] = {}
 attraction_service_cache: dict[str, Any] = {"service": None, "loaded_at": None}
 
 
@@ -433,6 +435,80 @@ def google_geocode(query: str) -> dict[str, Any] | None:
         "address": result.get("formatted_address", ""),
         "place_id": result.get("place_id", ""),
     }
+
+
+def google_place_open_status(place_id: str | None) -> dict[str, Any]:
+    place_id = str(place_id or "").strip()
+    if not place_id:
+        return {"open_now": None, "status": "unknown", "source": "none", "detail": "missing_place_id"}
+    if place_id in google_place_status_cache:
+        return google_place_status_cache[place_id]
+
+    key = get_google_maps_key()
+    if not key:
+        return {"open_now": None, "status": "unknown", "source": "none", "detail": "missing_google_key"}
+
+    try:
+        response = requests.get(
+            GOOGLE_PLACE_DETAILS_URL,
+            params={
+                "place_id": place_id,
+                "fields": "business_status,opening_hours,name",
+                "language": "zh-TW",
+                "region": "tw",
+                "key": key,
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as exc:
+        return {"open_now": None, "status": "unknown", "source": "google_places", "detail": str(exc)}
+
+    if payload.get("status") != "OK":
+        return {
+            "open_now": None,
+            "status": "unknown",
+            "source": "google_places",
+            "detail": payload.get("error_message") or payload.get("status") or "place_details_failed",
+        }
+
+    result = payload.get("result") or {}
+    business_status = result.get("business_status") or ""
+    if business_status in {"CLOSED_TEMPORARILY", "CLOSED_PERMANENTLY"}:
+        status = {
+            "open_now": False,
+            "status": "closed",
+            "source": "google_places",
+            "detail": business_status,
+        }
+    else:
+        open_now = result.get("opening_hours", {}).get("open_now")
+        status = {
+            "open_now": open_now if isinstance(open_now, bool) else None,
+            "status": "open" if open_now is True else "closed" if open_now is False else "unknown",
+            "source": "google_places",
+            "detail": business_status or "opening_hours",
+        }
+    google_place_status_cache[place_id] = status
+    return status
+
+
+def raw_open_status(raw: dict[str, Any]) -> dict[str, Any]:
+    explicit = raw.get("open_now")
+    if isinstance(explicit, bool):
+        return {
+            "open_now": explicit,
+            "status": "open" if explicit else "closed",
+            "source": "raw_open_now",
+            "detail": "",
+        }
+
+    opening_hours = str(raw.get("opening_hours") or raw.get("open_time") or raw.get("OpenTime") or "").strip()
+    if opening_hours and re.search(r"24\s*小時|24\s*hours|24/7|全天", opening_hours, re.IGNORECASE):
+        return {"open_now": True, "status": "open", "source": "opening_hours", "detail": opening_hours}
+
+    return google_place_open_status(raw.get("geocoded_place_id") or raw.get("place_id"))
 
 
 def fallback_commute(origin: dict[str, Any], destination: dict[str, Any], mode: str, include_geometry: bool = False) -> dict[str, Any]:
@@ -1025,6 +1101,8 @@ def normalize_place_payload(raw: dict[str, Any], criteria: dict[str, Any], conte
     )
     price = place_price(category, categories)
     indoor, outdoor = place_environment(category, categories)
+    open_status = raw_open_status(raw)
+    open_now = open_status.get("open_now") is True
 
     place = recommendation_algorithm.Place(
         id=str(raw.get("id") or raw.get("name")),
@@ -1033,7 +1111,7 @@ def normalize_place_payload(raw: dict[str, Any], criteria: dict[str, Any], conte
         outdoor=outdoor,
         travel_time=float(travel_time),
         price=price,
-        open_now=True,
+        open_now=open_now,
         reachable=destination["lat"] is not None and destination["lon"] is not None,
         data_valid=bool(raw.get("id") and raw.get("name")),
         is_event=False,
@@ -1064,7 +1142,10 @@ def normalize_place_payload(raw: dict[str, Any], criteria: dict[str, Any], conte
         "weather_summary": context.get("weather", {}).get("summary") or "天氣資料已納入後端評分",
         "aqi_value": context.get("air_quality", {}).get("aqi") or "--",
         "aqi_status": context.get("air_quality", {}).get("status") or "unknown",
-        "open_now": True,
+        "open_now": open_status.get("open_now"),
+        "opening_status": open_status.get("status"),
+        "opening_status_source": open_status.get("source"),
+        "opening_status_detail": open_status.get("detail"),
         "route_hint": (
             f"最快約 {commute['best']['duration_text']}，建議方式：{commute['best']['mode_label']}。"
             if commute

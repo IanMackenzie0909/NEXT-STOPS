@@ -101,8 +101,8 @@ export function aqiChip(context, fallbackValue = 65, fallbackStatus = "大台北
 }
 
 export function openingLabel(place) {
-  if (place?.open_now === false) return "可能未營業";
-  if (place?.open_now === true) return "目前可安排";
+  if (place?.open_now === false) return "目前未營業";
+  if (place?.open_now === true) return "營業中";
   return "營業狀態待確認";
 }
 

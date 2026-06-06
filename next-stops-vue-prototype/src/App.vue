@@ -55,7 +55,8 @@ function navigate(path) {
 
 function handleNavigate(path) {
   if (path === "/results" && !results.value.length && !loading.value) {
-    findStops();
+    navigate("/");
+    showToast("請先選擇情境，再按 Find my next stop");
     return;
   }
   navigate(path);
@@ -269,6 +270,16 @@ onMounted(() => {
 <template>
   <div class="app-shell">
     <div class="app-surface">
+      <div class="journey-background" aria-hidden="true">
+        <span class="journey-grid"></span>
+        <span class="journey-route one"></span>
+        <span class="journey-route two"></span>
+        <span class="journey-node a"></span>
+        <span class="journey-node b"></span>
+        <span class="journey-node c"></span>
+        <span class="journey-compass"></span>
+        <span class="journey-ticket"></span>
+      </div>
       <Transition name="screen-fade" mode="out-in">
         <HomeView
           v-if="routeName === 'home'"

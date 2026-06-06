@@ -191,7 +191,7 @@ async function loadRouteMap() {
       }
     }
     renderMapRoute(routeData.value.best);
-    mapStatus.value = `${routeData.value.best.duration_text} ${routeData.value.best.mode_label}`;
+    mapStatus.value = "已依最短通勤時間繪製路線";
   } catch (error) {
     mapStatus.value = `地圖無法載入：${error.message}`;
   }
@@ -241,7 +241,6 @@ watch(() => props.placeId, () => {
           <span class="commute-inline">
             <IconGlyph :name="commuteInfo.icon" />
             <strong>{{ commuteInfo.duration }}</strong>
-            <span>{{ commuteInfo.mode }}</span>
           </span>
           <small>{{ mapStatus }}</small>
         </div>
@@ -254,7 +253,7 @@ watch(() => props.placeId, () => {
             <span class="info-chip commute-chip">
               <IconGlyph :name="commuteInfo.icon" />
               <strong>{{ commuteInfo.duration }}</strong>
-              <small>{{ commuteInfo.mode }}</small>
+              <small>通勤時間</small>
             </span>
             <span><strong>{{ budgetLabel(place.budget) }}</strong><small>預算</small></span>
             <span class="info-chip status-chip">

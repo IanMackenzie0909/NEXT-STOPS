@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import AppIcon from "./AppIcon.vue";
 import IconGlyph from "./IconGlyph.vue";
 import { BUDGET_LABELS, LOCATION_FALLBACK_LABEL, MOODS, WEATHER_LABELS } from "../constants";
@@ -13,16 +13,29 @@ const props = defineProps({
   ambientEnabled: { type: Boolean, default: false },
 });
 const emit = defineEmits(["update:criteria", "find", "locate", "navigate", "toggle-ambient"]);
+const openSelect = ref("");
 
 const locationText = computed(() => {
   if (props.criteria.locationSource === "gps" && props.criteria.lat && props.criteria.lon) {
-    return `${props.criteria.locationLabel || "目前定位"} · ${Number(props.criteria.lat).toFixed(4)}, ${Number(props.criteria.lon).toFixed(4)}`;
+    return "目前定位 • 你的定位";
   }
-  return `${props.criteria.locationLabel || LOCATION_FALLBACK_LABEL} · fallback`;
+  return props.criteria.locationLabel || LOCATION_FALLBACK_LABEL;
+});
+
+const locationSubtext = computed(() => {
+  if (props.criteria.locationSource === "gps" && props.criteria.lat && props.criteria.lon) {
+    return `(${Number(props.criteria.lat).toFixed(4)}, ${Number(props.criteria.lon).toFixed(4)})`;
+  }
+  return "目前使用預設起點；按 Use location 可改用即時定位。";
 });
 
 function patch(updates) {
   emit("update:criteria", updates);
+}
+
+function chooseSelect(updates) {
+  patch(updates);
+  openSelect.value = "";
 }
 </script>
 
@@ -75,7 +88,7 @@ function patch(updates) {
         <div>
           <span>出發定位</span>
           <strong>{{ locationText }}</strong>
-          <small v-if="criteria.locationSource !== 'gps'">目前使用預設起點；按 Use location 可改用即時定位。</small>
+          <small>{{ locationSubtext }}</small>
         </div>
         <button class="ghost-action compact" type="button" :disabled="locating" @click="emit('locate')">
           {{ locating ? "Locating..." : "Use location" }}
@@ -83,18 +96,52 @@ function patch(updates) {
       </div>
 
       <div class="select-grid">
-        <label>
+        <div class="dropdown-field">
           <span>天氣</span>
-          <select :value="criteria.weatherPreference" @change="patch({ weatherPreference: $event.target.value })">
-            <option v-for="(label, value) in WEATHER_LABELS" :key="value" :value="value">{{ label }}</option>
-          </select>
-        </label>
-        <label>
+          <div class="calm-select" :class="{ open: openSelect === 'weather' }">
+            <button class="calm-select-trigger" type="button" @click="openSelect = openSelect === 'weather' ? '' : 'weather'">
+              <strong>{{ WEATHER_LABELS[criteria.weatherPreference] }}</strong>
+            </button>
+            <Transition name="select-pop">
+              <div v-if="openSelect === 'weather'" class="calm-select-menu">
+                <button
+                  v-for="(label, value) in WEATHER_LABELS"
+                  :key="value"
+                  class="calm-select-option"
+                  :class="{ selected: criteria.weatherPreference === value }"
+                  type="button"
+                  @click="chooseSelect({ weatherPreference: value })"
+                >
+                  <span>{{ label }}</span>
+                  <i v-if="criteria.weatherPreference === value">✓</i>
+                </button>
+              </div>
+            </Transition>
+          </div>
+        </div>
+        <div class="dropdown-field">
           <span>預算</span>
-          <select :value="criteria.budget" @change="patch({ budget: $event.target.value })">
-            <option v-for="(label, value) in BUDGET_LABELS" :key="value" :value="value">{{ label }}</option>
-          </select>
-        </label>
+          <div class="calm-select" :class="{ open: openSelect === 'budget' }">
+            <button class="calm-select-trigger" type="button" @click="openSelect = openSelect === 'budget' ? '' : 'budget'">
+              <strong>{{ BUDGET_LABELS[criteria.budget] }}</strong>
+            </button>
+            <Transition name="select-pop">
+              <div v-if="openSelect === 'budget'" class="calm-select-menu">
+                <button
+                  v-for="(label, value) in BUDGET_LABELS"
+                  :key="value"
+                  class="calm-select-option"
+                  :class="{ selected: criteria.budget === value }"
+                  type="button"
+                  @click="chooseSelect({ budget: value })"
+                >
+                  <span>{{ label }}</span>
+                  <i v-if="criteria.budget === value">✓</i>
+                </button>
+              </div>
+            </Transition>
+          </div>
+        </div>
       </div>
 
       <button class="primary-action" type="button" :disabled="loading || locating" @click="emit('find')">

@@ -94,7 +94,6 @@ function placeAqiChip(place) {
           <span class="badge-chip commute-badge">
             <IconGlyph :name="commuteInfo(place).icon" />
             <strong>{{ commuteInfo(place).duration }}</strong>
-            <small>{{ commuteInfo(place).mode }}</small>
           </span>
           <span
             v-for="item in placeWeatherChips(place)"
