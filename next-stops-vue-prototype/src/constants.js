@@ -7,12 +7,7 @@ export const MOODS = [
   { id: "night_out", label: "夜晚出門", short: "Night" },
 ];
 
-export const LOCATION_LABELS = {
-  taipei_main: "台北車站",
-  xinyi: "信義區",
-  daan: "大安森林公園",
-  songshan: "松山",
-};
+export const LOCATION_FALLBACK_LABEL = "台北車站";
 
 export const WEATHER_LABELS = {
   any: "戶外也可以",

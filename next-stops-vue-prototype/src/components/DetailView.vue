@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from "vue";
 import { getContext, getPlace } from "../api/nextStopsApi";
-import { LOCATION_LABELS } from "../constants";
+import { LOCATION_FALLBACK_LABEL } from "../constants";
 import { budgetLabel, formatWeatherNow } from "../utils/formatters";
 
 const props = defineProps({
@@ -74,7 +74,7 @@ watch(() => props.placeId, () => {
       <section class="reason-list">
         <div><strong>Why now</strong><span>{{ place.reason }}</span></div>
         <div><strong>Route</strong><span>{{ place.route_hint }}</span></div>
-        <div><strong>Start</strong><span>{{ LOCATION_LABELS[criteria.location] }}</span></div>
+        <div><strong>Start</strong><span>{{ criteria.locationLabel || LOCATION_FALLBACK_LABEL }}</span></div>
       </section>
 
       <div class="action-row">

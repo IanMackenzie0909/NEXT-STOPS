@@ -8,18 +8,22 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import os
 import re
+import sqlite3
+import sys
 import threading
 import time
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import requests
 
 try:
-    from fastapi import FastAPI, HTTPException, Query
+    from fastapi import Body, FastAPI, HTTPException, Query
     from fastapi.middleware.cors import CORSMiddleware
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("請先安裝 FastAPI dependencies：pip install -r requirements.txt") from exc
@@ -27,6 +31,9 @@ except ImportError as exc:  # pragma: no cover
 
 ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = ROOT.parent
+ATTRACTION_PLATFORM_ROOT = ROOT / "taipei_attraction_search_platform"
+ATTRACTION_CACHE = ATTRACTION_PLATFORM_ROOT / "data" / "taipei_places.json"
+RECOMMENDATION_DB = Path(os.getenv("NEXT_STOPS_DB_PATH", ROOT / "data" / "next_stops.sqlite3"))
 MAX_STATION_RESULTS = 300
 TDX_REQUEST_RETRIES = 2
 
@@ -37,6 +44,55 @@ SAMPLE_LOCATIONS = [
     {"name": "北投溫泉", "lat": 25.1368, "lon": 121.5064},
     {"name": "南港展覽館", "lat": 25.0553, "lon": 121.6175},
 ]
+
+LOCATION_HINTS = {
+    "taipei_main": {"lat": 25.0478, "lon": 121.5170, "district": "中正區", "label": "台北車站"},
+    "xinyi": {"lat": 25.0339, "lon": 121.5645, "district": "信義區", "label": "信義區"},
+    "daan": {"lat": 25.0262, "lon": 121.5353, "district": "大安區", "label": "大安森林公園"},
+    "songshan": {"lat": 25.0496, "lon": 121.5777, "district": "松山區", "label": "松山"},
+}
+
+FRONTEND_MOOD_TO_ALGORITHM = {
+    "relaxing_walk": "relax",
+    "date": "date",
+    "solo_quiet": "solo",
+    "photo": "photo",
+    "rainy_backup": "relax",
+    "night_out": "night",
+}
+
+MOOD_LABELS = {
+    "relaxing_walk": "散步放鬆",
+    "date": "約會",
+    "solo_quiet": "一個人安靜",
+    "photo": "拍照探索",
+    "rainy_backup": "雨天備案",
+    "night_out": "夜晚出門",
+}
+
+MOOD_QUERIES = {
+    "relaxing_walk": ["公園", "步道", "河濱"],
+    "date": ["景觀", "文創", "餐廳"],
+    "solo_quiet": ["博物館", "書店", "紀念館"],
+    "photo": ["景點", "古蹟", "藝術"],
+    "rainy_backup": ["博物館", "美術館", "文創"],
+    "night_out": ["夜市", "商圈", "景觀"],
+}
+
+CATEGORY_LABELS = {
+    "cafe": "咖啡",
+    "park": "公園",
+    "museum": "博物館",
+    "market": "市集",
+    "bookstore": "書店",
+    "riverside": "河濱",
+    "gallery": "藝文",
+    "restaurant": "餐飲",
+    "viewpoint": "景觀",
+    "scenic_spot": "景點",
+    "attraction": "景點",
+    "taipei_featured": "精選景點",
+}
 
 
 def load_root_env() -> None:
@@ -53,10 +109,15 @@ def load_root_env() -> None:
 
 def load_module(module_name: str, filename: str):
     module_path = ROOT / filename
+    return load_module_from_path(module_name, module_path)
+
+
+def load_module_from_path(module_name: str, module_path: Path):
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot load module from {module_path}")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -68,6 +129,15 @@ moenv_module = load_module("moenv_aqi_api_clients", "MOENV-AQI_API_clients.py")
 weather_aqi_module = load_module("weather_aqi_api_clients", "Weather-AQI_API_clients.py")
 bus_module = load_module("tdx_bus_api_clients", "TDX-BUS_API_clients.py")
 mrt_module = load_module("tdx_mrt_api_clients", "TDX-MRT_API_clients.py")
+recommendation_algorithm = load_module_from_path("next_stops_recommendation_algorithm", PROJECT_ROOT / "algorithm.py")
+
+if str(ATTRACTION_PLATFORM_ROOT) not in sys.path:
+    sys.path.insert(0, str(ATTRACTION_PLATFORM_ROOT))
+
+try:
+    from taipei_attraction_platform.services.search_service import TaipeiAttractionSearchService
+except ImportError as exc:  # pragma: no cover
+    raise RuntimeError("Cannot import Taipei attraction search service") from exc
 
 
 app = FastAPI(title="NEXT STOPS Data API", version="1.0.0")
@@ -129,6 +199,7 @@ mrt_tdx = CachedTDX(mrt_module)
 weather_aqi_client = weather_aqi_module.WeatherAQIClient()
 bus_station_cache: dict[str, dict[str, Any]] = {}
 mrt_stations_cache: dict[str, Any] = {"items": [], "fetched_at": None}
+attraction_service_cache: dict[str, Any] = {"service": None, "loaded_at": None}
 
 
 def normalize_search_text(value: object) -> str:
@@ -167,6 +238,584 @@ def run_or_raise(func):
         return func()
     except Exception as exc:
         raise api_error(exc) from exc
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def to_float(value: object, default: float | None = None) -> float | None:
+    try:
+        if value in (None, ""):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def haversine_m(lat1: float | None, lon1: float | None, lat2: float | None, lon2: float | None) -> float | None:
+    if None in (lat1, lon1, lat2, lon2):
+        return None
+    radius = 6371000
+    phi1 = math.radians(float(lat1))
+    phi2 = math.radians(float(lat2))
+    delta_phi = math.radians(float(lat2) - float(lat1))
+    delta_lambda = math.radians(float(lon2) - float(lon1))
+    a = math.sin(delta_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
+    return radius * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def get_attraction_service() -> TaipeiAttractionSearchService:
+    if attraction_service_cache["service"] is not None:
+        return attraction_service_cache["service"]
+
+    service = (
+        TaipeiAttractionSearchService.from_cache(ATTRACTION_CACHE)
+        if ATTRACTION_CACHE.exists()
+        else TaipeiAttractionSearchService(cache_path=ATTRACTION_CACHE)
+    )
+    if not service.index.places:
+        try:
+            service.build()
+        except Exception as exc:
+            raise RuntimeError(
+                "Attraction cache is empty and automatic build failed. "
+                "Run POST /api/places/build after network/API setup, or start the attraction service build first. "
+                f"Original error: {exc}"
+            ) from exc
+
+    attraction_service_cache["service"] = service
+    attraction_service_cache["loaded_at"] = now_iso()
+    return service
+
+
+def serialize_search_results(results: list) -> list[dict[str, Any]]:
+    return [result.to_dict() for result in results]
+
+
+def search_attraction_places(
+    q: str | None = None,
+    district: str | None = None,
+    category: str | None = None,
+    lat: float | None = None,
+    lon: float | None = None,
+    radius_m: int | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    service = get_attraction_service()
+    return serialize_search_results(
+        service.search(
+            query=q,
+            district=district,
+            category=category,
+            lat=lat,
+            lon=lon,
+            radius_m=radius_m,
+            limit=limit,
+            include_missing_coordinates=False,
+        )
+    )
+
+
+def init_recommendation_db() -> None:
+    RECOMMENDATION_DB.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS recommendation_requests (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                session_id TEXT,
+                criteria_json TEXT NOT NULL,
+                context_json TEXT NOT NULL,
+                source_status_json TEXT NOT NULL,
+                result_count INTEGER NOT NULL
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS recommendation_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL,
+                rank INTEGER NOT NULL,
+                place_id TEXT NOT NULL,
+                place_name TEXT NOT NULL,
+                score REAL NOT NULL,
+                uncertainty REAL NOT NULL,
+                reason TEXT,
+                result_json TEXT NOT NULL,
+                FOREIGN KEY(request_id) REFERENCES recommendation_requests(id)
+            )
+            """
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_recommendation_results_request ON recommendation_results(request_id)")
+
+
+def record_recommendation(
+    request_id: str,
+    session_id: str | None,
+    criteria: dict[str, Any],
+    context: dict[str, Any],
+    source_status: dict[str, Any],
+    results: list[dict[str, Any]],
+) -> None:
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.execute(
+            """
+            INSERT INTO recommendation_requests (
+                id, created_at, session_id, criteria_json, context_json, source_status_json, result_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                request_id,
+                now_iso(),
+                session_id,
+                json.dumps(criteria, ensure_ascii=False),
+                json.dumps(context, ensure_ascii=False),
+                json.dumps(source_status, ensure_ascii=False),
+                len(results),
+            ),
+        )
+        db.executemany(
+            """
+            INSERT INTO recommendation_results (
+                request_id, rank, place_id, place_name, score, uncertainty, reason, result_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    request_id,
+                    index + 1,
+                    result.get("id", ""),
+                    result.get("name", ""),
+                    float(result.get("algorithm", {}).get("score", 0)),
+                    float(result.get("algorithm", {}).get("uncertainty", 0)),
+                    result.get("reason", ""),
+                    json.dumps(result, ensure_ascii=False),
+                )
+                for index, result in enumerate(results)
+            ],
+        )
+
+
+def fetch_recommendation_record(request_id: str) -> dict[str, Any] | None:
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        request = db.execute("SELECT * FROM recommendation_requests WHERE id = ?", (request_id,)).fetchone()
+        if request is None:
+            return None
+        rows = db.execute(
+            "SELECT * FROM recommendation_results WHERE request_id = ? ORDER BY rank",
+            (request_id,),
+        ).fetchall()
+
+    return {
+        "id": request["id"],
+        "created_at": request["created_at"],
+        "session_id": request["session_id"],
+        "criteria": json.loads(request["criteria_json"]),
+        "context": json.loads(request["context_json"]),
+        "source_status": json.loads(request["source_status_json"]),
+        "count": request["result_count"],
+        "results": [json.loads(row["result_json"]) for row in rows],
+    }
+
+
+def criteria_location(criteria: dict[str, Any]) -> dict[str, Any]:
+    lat = to_float(criteria.get("lat"))
+    lon = to_float(criteria.get("lon") if criteria.get("lon") is not None else criteria.get("lng"))
+    if lat is not None and lon is not None:
+        return {
+            "lat": lat,
+            "lon": lon,
+            "district": criteria.get("district"),
+            "label": criteria.get("locationLabel") or "目前定位",
+            "source": criteria.get("locationSource") or "browser",
+        }
+    location_key = str(criteria.get("location") or "taipei_main")
+    return LOCATION_HINTS.get(location_key, LOCATION_HINTS["taipei_main"])
+
+
+def recommendation_context(criteria: dict[str, Any]) -> dict[str, Any]:
+    location = criteria_location(criteria)
+    return weather_aqi_client.context(location["lat"], location["lon"])
+
+
+def rain_probability_from_context(context: dict[str, Any]) -> float:
+    value = context.get("weather", {}).get("rain_probability")
+    return float(value) if value is not None else 0.25
+
+
+def aqi_from_context(context: dict[str, Any]) -> float:
+    value = context.get("air_quality", {}).get("aqi")
+    return float(value) if value is not None else 65.0
+
+
+def budget_for_algorithm(value: object) -> str:
+    budget = str(value or "medium")
+    if budget == "low":
+        return "low"
+    if budget in {"high", "flexible"}:
+        return "high"
+    return "medium"
+
+
+def user_context_from_criteria(criteria: dict[str, Any], context: dict[str, Any]):
+    mood_key = str(criteria.get("mood") or "relaxing_walk")
+    algorithm_mood = FRONTEND_MOOD_TO_ALGORITHM.get(mood_key, "relax")
+    travel_limit = max(10.0, float(criteria.get("distance") or 30))
+    rain_prob = rain_probability_from_context(context)
+    aqi_value = aqi_from_context(context)
+    ignored_factors = set(criteria.get("ignoredFactors") or [])
+    if str(criteria.get("budget") or "medium") == "flexible":
+        ignored_factors.add("budget")
+
+    weather_preference = str(criteria.get("weatherPreference") or "any")
+    outdoor_comfort = str(context.get("outdoor_comfort") or "")
+    severe_weather = (
+        weather_preference == "avoid_rain"
+        and (rain_prob >= 0.5 or outdoor_comfort in {"rain_risk", "poor_air_quality", "air_quality_watch"})
+    )
+
+    return recommendation_algorithm.UserContext(
+        scenario=str(criteria.get("scenario") or mood_key),
+        mood=algorithm_mood,
+        preferred_time=max(8.0, travel_limit * 0.75),
+        hard_max_time=travel_limit,
+        rain_prob=rain_prob,
+        aqi=aqi_value,
+        budget=budget_for_algorithm(criteria.get("budget")),
+        secondary_mood=None,
+        ignored_factors=ignored_factors,
+        indoor_only=weather_preference == "indoor",
+        outdoor_preferred=weather_preference == "any",
+        severe_weather=severe_weather,
+        user_weight_adjustment=criteria.get("weightAdjustments") or {},
+    )
+
+
+def primary_category(categories: list[str], text: str = "") -> str:
+    blob = " ".join([*(categories or []), text]).lower()
+    checks = [
+        ("bookstore", r"書店|bookstore"),
+        ("riverside", r"河濱|riverside|river"),
+        ("museum", r"博物館|紀念館|museum"),
+        ("gallery", r"美術館|藝文|藝術|gallery|文創"),
+        ("restaurant", r"餐廳|restaurant|food|餐飲"),
+        ("market", r"夜市|市場|market|商圈"),
+        ("park", r"公園|步道|山|湖|park|trail"),
+        ("viewpoint", r"景觀|夜景|古蹟|景點|viewpoint|scenic|attraction|taipei_featured"),
+        ("cafe", r"咖啡|cafe"),
+    ]
+    for category, pattern in checks:
+        if re.search(pattern, blob):
+            return category
+    return "viewpoint"
+
+
+def display_category(value: str) -> str:
+    return CATEGORY_LABELS.get(value, value or "景點")
+
+
+def place_price(category: str, categories: list[str]) -> str:
+    blob = " ".join([category, *(categories or [])])
+    if re.search(r"公園|河濱|古蹟|park|riverside|taipei_featured", blob):
+        return "low"
+    if re.search(r"餐廳|商圈|restaurant|market", blob):
+        return "high"
+    return "medium"
+
+
+def display_budget_from_price(price: str) -> str:
+    return "flexible" if price == "high" else price
+
+
+def place_environment(category: str, categories: list[str]) -> tuple[bool, bool]:
+    blob = " ".join([category, *(categories or [])])
+    indoor = bool(re.search(r"museum|gallery|bookstore|restaurant|cafe|market|博物館|美術館|書店|餐廳|文創", blob))
+    outdoor = bool(re.search(r"park|riverside|viewpoint|market|公園|河濱|步道|景觀|夜市|古蹟", blob))
+    if not indoor and not outdoor:
+        outdoor = True
+    return indoor, outdoor
+
+
+def mood_fit_for_place(category: str, place_text: str) -> dict[str, float]:
+    fits = {}
+    for mood in recommendation_algorithm.MOODS:
+        if category in recommendation_algorithm.PREFERRED_CATEGORIES_BY_MOOD[mood]:
+            score = 0.94
+        elif category in recommendation_algorithm.SECONDARY_CATEGORIES_BY_MOOD[mood]:
+            score = 0.76
+        else:
+            score = 0.56
+
+        patterns = {
+            "relax": r"公園|河濱|步道|花|山|湖|安靜|放鬆",
+            "date": r"景觀|文創|餐廳|夜景|藝術|咖啡",
+            "solo": r"博物館|書店|紀念館|美術館|寺|廟|安靜",
+            "photo": r"景點|古蹟|藝術|景觀|街|山|夜景",
+            "night": r"夜市|商圈|夜景|餐廳|市場",
+        }
+        if re.search(patterns[mood], place_text):
+            score = min(1.0, score + 0.06)
+        fits[mood] = recommendation_algorithm.clamp(score)
+    return fits
+
+
+def normalize_place_payload(raw: dict[str, Any], criteria: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    categories = [str(item) for item in raw.get("categories") or [] if item]
+    text = " ".join([
+        str(raw.get("name") or ""),
+        str(raw.get("description") or ""),
+        str(raw.get("district") or ""),
+        " ".join(categories),
+    ])
+    category = primary_category(categories, text)
+    quality = float(raw.get("quality_score") or raw.get("score") or 0.55)
+    if quality > 1:
+        quality /= 100
+    distance_m = to_float(raw.get("distance_m"))
+    travel_time = max(8, round(distance_m / 420)) if distance_m is not None else max(12, round(float(criteria.get("distance") or 30) * 0.8))
+    price = place_price(category, categories)
+    indoor, outdoor = place_environment(category, categories)
+
+    place = recommendation_algorithm.Place(
+        id=str(raw.get("id") or raw.get("name")),
+        category=category,
+        indoor=indoor,
+        outdoor=outdoor,
+        travel_time=float(travel_time),
+        price=price,
+        open_now=True,
+        reachable=raw.get("lat") is not None and (raw.get("lon") is not None or raw.get("lng") is not None),
+        data_valid=bool(raw.get("id") and raw.get("name")),
+        is_event=False,
+        event_active=True,
+        quality=recommendation_algorithm.clamp(quality),
+        mood_fit=mood_fit_for_place(category, text),
+        weather_exposure=0.25 if indoor and not outdoor else 0.55 if indoor and outdoor else 0.9,
+        aqi_exposure=0.35 if indoor and not outdoor else 0.65 if indoor and outdoor else 0.95,
+    )
+    display = {
+        **raw,
+        "id": place.id,
+        "name": raw.get("name") or place.id,
+        "category": display_category(category),
+        "algorithm_category": category,
+        "categories": categories,
+        "address": raw.get("address") or f"{raw.get('district') or '臺北市'} / 臺北市",
+        "lat": raw.get("lat"),
+        "lng": raw.get("lon") if raw.get("lon") is not None else raw.get("lng"),
+        "lon": raw.get("lon") if raw.get("lon") is not None else raw.get("lng"),
+        "description": raw.get("description") or "資料來自台北景點搜尋平台，並由後端推薦引擎重新評分。",
+        "matched_travel_time": travel_time,
+        "travel_time_minutes": travel_time,
+        "budget": display_budget_from_price(price),
+        "weather_status": "watch" if outdoor and rain_probability_from_context(context) >= 0.45 else "suitable" if indoor else "any",
+        "weather_summary": context.get("weather", {}).get("summary") or "天氣資料已納入後端評分",
+        "aqi_value": context.get("air_quality", {}).get("aqi") or "--",
+        "aqi_status": context.get("air_quality", {}).get("status") or "unknown",
+        "open_now": True,
+        "route_hint": "已納入距離與即時情境評分；實際路線請用地圖確認。",
+        "rating": raw.get("rating") or round((3.8 + place.quality * 1.1) * 10) / 10,
+    }
+    return {"algorithm_place": place, "display": display}
+
+
+def collect_candidate_places(criteria: dict[str, Any], context: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+    location = criteria_location(criteria)
+    radius_m = max(1200, int(float(criteria.get("distance") or 30) * 90))
+    queries = MOOD_QUERIES.get(str(criteria.get("mood") or "relaxing_walk"), [""])
+    collected: dict[str, dict[str, Any]] = {}
+
+    for query in queries:
+        for item in search_attraction_places(
+            q=query,
+            lat=location["lat"],
+            lon=location["lon"],
+            radius_m=radius_m,
+            limit=max(18, limit * 5),
+        ):
+            collected.setdefault(str(item.get("id")), item)
+
+    if len(collected) < limit * 2:
+        for item in search_attraction_places(
+            lat=location["lat"],
+            lon=location["lon"],
+            radius_m=radius_m,
+            limit=max(24, limit * 6),
+        ):
+            collected.setdefault(str(item.get("id")), item)
+
+    return [normalize_place_payload(item, criteria, context) for item in collected.values()]
+
+
+def tdx_credentials_configured() -> bool:
+    values = [bus_tdx.client_id, bus_tdx.client_secret, mrt_tdx.client_id, mrt_tdx.client_secret]
+    return all(values) and not any(str(value).startswith("your_") for value in values)
+
+
+def nearest_positioned_item(items: list[dict[str, Any]], lat: float | None, lon: float | None, serializer) -> dict[str, Any] | None:
+    if lat is None or lon is None:
+        return None
+    nearest = None
+    nearest_distance = None
+    for item in items:
+        summary = serializer(item)
+        position = summary.get("position") or {}
+        distance = haversine_m(lat, lon, position.get("lat"), position.get("lon"))
+        if distance is None:
+            continue
+        if nearest_distance is None or distance < nearest_distance:
+            nearest = summary
+            nearest_distance = distance
+    if nearest is None:
+        return None
+    nearest["distance_m"] = round(nearest_distance)
+    return nearest
+
+
+def serialize_mrt_station_with_position(station: dict[str, Any]) -> dict[str, Any]:
+    summary = mrt_station_summary(station)
+    position = station.get("StationPosition") or {}
+    summary["position"] = {
+        "lat": position.get("PositionLat"),
+        "lon": position.get("PositionLon"),
+    }
+    return summary
+
+
+def build_transport_context(results: list[dict[str, Any]], city: str | None = None) -> dict[str, Any]:
+    status = {"tdx": "skipped", "bus": None, "mrt": None}
+    if not tdx_credentials_configured():
+        status["reason"] = "TDX credentials are not configured."
+        return {"status": status, "by_place": {}}
+
+    bus_stations = []
+    mrt_stations = []
+    selected_city = get_bus_city(city)
+    try:
+        bus_stations = get_bus_stations(selected_city)
+        status["bus"] = "ok"
+    except Exception as exc:
+        status["bus"] = f"error: {exc}"
+    try:
+        mrt_stations = get_mrt_stations()
+        status["mrt"] = "ok"
+    except Exception as exc:
+        status["mrt"] = f"error: {exc}"
+
+    status["tdx"] = "ok" if status.get("bus") == "ok" or status.get("mrt") == "ok" else "error"
+    by_place = {}
+    for result in results:
+        lat = to_float(result.get("lat"))
+        lon = to_float(result.get("lon") if result.get("lon") is not None else result.get("lng"))
+        by_place[result["id"]] = {
+            "nearest_bus_station": nearest_positioned_item(bus_stations, lat, lon, bus_module.serialize_station) if bus_stations else None,
+            "nearest_mrt_station": nearest_positioned_item(mrt_stations, lat, lon, serialize_mrt_station_with_position) if mrt_stations else None,
+        }
+    return {"status": status, "by_place": by_place}
+
+
+def format_recommendation_result(
+    recommendation,
+    display_place: dict[str, Any],
+    criteria: dict[str, Any],
+    context: dict[str, Any],
+    transport: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    score_percent = round(float(recommendation.score) * 100)
+    uncertainty_percent = round(float(recommendation.uncertainty) * 100, 1)
+    mood_label = MOOD_LABELS.get(str(criteria.get("mood")), "目前情境")
+    reason = (
+        f"{display_place['name']} 符合「{mood_label}」情境，預估約 "
+        f"{display_place['matched_travel_time']} 分鐘可到；後端已納入天氣、AQI、預算、距離與資料品質評分。"
+    )
+    return {
+        **display_place,
+        "score": score_percent,
+        "reason": reason,
+        "algorithm_reason": recommendation.reason,
+        "transport": transport,
+        "algorithm": {
+            "score": recommendation.score,
+            "uncertainty": recommendation.uncertainty,
+            "worst_score": recommendation.worst_score,
+            "normal_score": recommendation.normal_score,
+            "best_score": recommendation.best_score,
+            "active_factors": recommendation.active_factors,
+            "weights": recommendation.weights,
+            "fallback": recommendation.fallback,
+            "uncertainty_percent": uncertainty_percent,
+        },
+        "context": {
+            "weather": context.get("weather", {}),
+            "air_quality": context.get("air_quality", {}),
+            "uv": context.get("uv", {}),
+            "outdoor_comfort": context.get("outdoor_comfort"),
+        },
+    }
+
+
+def build_recommendations(payload: dict[str, Any]) -> dict[str, Any]:
+    criteria = payload.get("criteria") or payload
+    if not isinstance(criteria, dict):
+        raise ValueError("criteria must be an object")
+    limit = max(1, min(int(payload.get("limit") or criteria.get("limit") or 5), 12))
+    session_id = payload.get("session_id") or criteria.get("session_id")
+    include_transport = bool(payload.get("include_transport", True))
+    request_id = str(uuid.uuid4())
+
+    context = recommendation_context(criteria)
+    user = user_context_from_criteria(criteria, context)
+    candidates = collect_candidate_places(criteria, context, limit)
+    algorithm_places = [item["algorithm_place"] for item in candidates]
+    displays_by_id = {item["algorithm_place"].id: item["display"] for item in candidates}
+
+    recommendations, filtered_reasons = recommendation_algorithm.recommend(algorithm_places, user, k=limit)
+    preliminary = [
+        format_recommendation_result(item, displays_by_id[item.place.id], criteria, context)
+        for item in recommendations
+    ]
+    transport_context = build_transport_context(preliminary) if include_transport else {"status": {"tdx": "disabled"}, "by_place": {}}
+    results = [
+        {
+            **result,
+            "transport": transport_context.get("by_place", {}).get(result["id"]),
+        }
+        for result in preliminary
+    ]
+    source_status = {
+        "attractions": {
+            "status": "ok",
+            "cache": str(ATTRACTION_CACHE),
+            "candidate_count": len(candidates),
+        },
+        "weather_aqi": context.get("source_status", {}),
+        "transport": transport_context.get("status", {}),
+        "algorithm": {
+            "status": "ok",
+            "module": str(PROJECT_ROOT / "algorithm.py"),
+            "filtered_reasons": dict(filtered_reasons),
+        },
+        "sqlite": {
+            "status": "ok",
+            "path": str(RECOMMENDATION_DB),
+        },
+    }
+    record_recommendation(request_id, session_id, criteria, context, source_status, results)
+    return {
+        "request_id": request_id,
+        "session_id": session_id,
+        "count": len(results),
+        "criteria": criteria,
+        "context": context,
+        "source_status": source_status,
+        "results": results,
+    }
 
 
 @app.get("/health")
@@ -217,6 +866,64 @@ def cwa_township_forecast(lat: float, lon: float):
 @app.get("/api/moenv/aqi")
 def moenv_aqi(lat: float, lon: float):
     return run_or_raise(lambda: moenv_module.MOENVAQIClient().aqi(lat, lon))
+
+
+@app.post("/api/places/build")
+def places_build(with_optional: bool = False):
+    def build():
+        service = TaipeiAttractionSearchService(cache_path=ATTRACTION_CACHE)
+        report = service.build(include_optional_nearby=with_optional)
+        attraction_service_cache["service"] = service
+        attraction_service_cache["loaded_at"] = now_iso()
+        return {"final_count": report.final_count, "fetched_counts": report.fetched_counts, "errors": report.errors}
+
+    return run_or_raise(build)
+
+
+@app.get("/api/places/search")
+def api_places_search(
+    q: str | None = None,
+    district: str | None = None,
+    category: str | None = None,
+    lat: float | None = None,
+    lon: float | None = None,
+    radius_m: int | None = None,
+    limit: int = 20,
+):
+    return run_or_raise(
+        lambda: {
+            "count": len(
+                results := search_attraction_places(
+                    q=q,
+                    district=district,
+                    category=category,
+                    lat=lat,
+                    lon=lon,
+                    radius_m=radius_m,
+                    limit=limit,
+                )
+            ),
+            "results": results,
+        }
+    )
+
+
+@app.get("/api/districts")
+def api_districts():
+    return run_or_raise(lambda: get_attraction_service().districts())
+
+
+@app.post("/api/recommendations")
+def api_recommendations(payload: dict[str, Any] | None = Body(default=None)):
+    return run_or_raise(lambda: build_recommendations(payload or {}))
+
+
+@app.get("/api/recommendations/{request_id}")
+def api_recommendation_record(request_id: str):
+    record = run_or_raise(lambda: fetch_recommendation_record(request_id))
+    if record is None:
+        raise HTTPException(status_code=404, detail="Recommendation request not found")
+    return record
 
 
 def get_bus_city(city: str | None = None) -> str:

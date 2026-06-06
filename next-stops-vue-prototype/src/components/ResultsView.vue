@@ -1,5 +1,5 @@
 <script setup>
-import { LOCATION_LABELS, MOODS } from "../constants";
+import { LOCATION_FALLBACK_LABEL, MOODS } from "../constants";
 
 defineProps({
   criteria: { type: Object, required: true },
@@ -14,7 +14,7 @@ const emit = defineEmits(["navigate", "view", "toggle-save"]);
     <header class="screen-header">
       <button class="back-button" type="button" @click="emit('navigate', '/')">‹</button>
       <div>
-        <p class="muted">{{ LOCATION_LABELS[criteria.location] }} 出發</p>
+        <p class="muted">{{ criteria.locationLabel || LOCATION_FALLBACK_LABEL }} 出發</p>
         <h1>{{ MOODS.find((item) => item.id === criteria.mood)?.label || "推薦" }}</h1>
       </div>
     </header>

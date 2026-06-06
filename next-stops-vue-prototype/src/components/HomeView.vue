@@ -1,14 +1,23 @@
 <script setup>
+import { computed } from "vue";
 import AppIcon from "./AppIcon.vue";
-import { BUDGET_LABELS, LOCATION_LABELS, MOODS, WEATHER_LABELS } from "../constants";
+import { BUDGET_LABELS, LOCATION_FALLBACK_LABEL, MOODS, WEATHER_LABELS } from "../constants";
 import { formatTime } from "../utils/formatters";
 
-defineProps({
+const props = defineProps({
   criteria: { type: Object, required: true },
   loading: { type: Boolean, default: false },
+  locating: { type: Boolean, default: false },
   savedCount: { type: Number, default: 0 },
 });
-const emit = defineEmits(["update:criteria", "find", "navigate"]);
+const emit = defineEmits(["update:criteria", "find", "locate", "navigate"]);
+
+const locationText = computed(() => {
+  if (props.criteria.locationSource === "gps" && props.criteria.lat && props.criteria.lon) {
+    return `${props.criteria.locationLabel || "目前定位"} · ${Number(props.criteria.lat).toFixed(4)}, ${Number(props.criteria.lon).toFixed(4)}`;
+  }
+  return `${props.criteria.locationLabel || LOCATION_FALLBACK_LABEL} · fallback`;
+});
 
 function patch(updates) {
   emit("update:criteria", updates);
@@ -41,7 +50,7 @@ function patch(updates) {
       <p>依照心情、時間、天氣偏好與出發區域，挑一個現在能去的臺北地點。</p>
       <div class="metric-row">
         <span>{{ formatTime(criteria.time) }}</span>
-        <span>{{ LOCATION_LABELS[criteria.location] }}</span>
+        <span>{{ criteria.locationLabel || LOCATION_FALLBACK_LABEL }}</span>
         <span>{{ WEATHER_LABELS[criteria.weatherPreference] }}</span>
       </div>
     </section>
@@ -79,13 +88,17 @@ function patch(updates) {
         <input type="range" min="10" max="90" step="5" :value="criteria.distance" @input="patch({ distance: Number($event.target.value) })" />
       </label>
 
+      <div class="location-field">
+        <div>
+          <span>出發定位</span>
+          <strong>{{ locationText }}</strong>
+        </div>
+        <button class="ghost-action compact" type="button" :disabled="locating" @click="emit('locate')">
+          {{ locating ? "Locating..." : "Use location" }}
+        </button>
+      </div>
+
       <div class="select-grid">
-        <label>
-          <span>出發</span>
-          <select :value="criteria.location" @change="patch({ location: $event.target.value })">
-            <option v-for="(label, value) in LOCATION_LABELS" :key="value" :value="value">{{ label }}</option>
-          </select>
-        </label>
         <label>
           <span>天氣</span>
           <select :value="criteria.weatherPreference" @change="patch({ weatherPreference: $event.target.value })">
@@ -100,8 +113,8 @@ function patch(updates) {
         </label>
       </div>
 
-      <button class="primary-action" type="button" :disabled="loading" @click="emit('find')">
-        {{ loading ? "Finding..." : "Find my next stop" }}
+      <button class="primary-action" type="button" :disabled="loading || locating" @click="emit('find')">
+        {{ loading ? "Finding..." : locating ? "Locating..." : "Find my next stop" }}
       </button>
     </section>
   </main>

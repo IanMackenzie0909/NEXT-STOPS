@@ -7,12 +7,17 @@ import ResultsView from "./components/ResultsView.vue";
 import SavedView from "./components/SavedView.vue";
 import Toast from "./components/Toast.vue";
 import { deleteSavedPlace, getRecommendations, getSavedPlaces, savePlace, updateSavedPlace } from "./api/nextStopsApi";
+import { LOCATION_FALLBACK_LABEL } from "./constants";
 
 const criteria = reactive({
   mood: "relaxing_walk",
   time: 120,
   distance: 30,
   location: "taipei_main",
+  locationLabel: LOCATION_FALLBACK_LABEL,
+  locationSource: "fallback",
+  lat: null,
+  lon: null,
   weatherPreference: "any",
   budget: "medium",
 });
@@ -21,6 +26,7 @@ const route = ref(window.location.hash.replace(/^#/, "") || "/");
 const results = ref([]);
 const saved = ref([]);
 const loading = ref(false);
+const locating = ref(false);
 const toastMessage = ref("");
 let toastTimer;
 
@@ -43,8 +49,56 @@ function updateCriteria(updates) {
   Object.assign(criteria, updates);
 }
 
+function locateUser() {
+  if (!("geolocation" in navigator)) {
+    showToast("瀏覽器不支援定位，先使用台北車站作為起點");
+    updateCriteria({
+      location: "taipei_main",
+      locationLabel: LOCATION_FALLBACK_LABEL,
+      locationSource: "fallback",
+      lat: null,
+      lon: null,
+    });
+    return Promise.resolve(false);
+  }
+
+  locating.value = true;
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const lat = Number(position.coords.latitude.toFixed(6));
+        const lon = Number(position.coords.longitude.toFixed(6));
+        updateCriteria({
+          location: "current",
+          locationLabel: "目前定位",
+          locationSource: "gps",
+          lat,
+          lon,
+        });
+        locating.value = false;
+        showToast("已更新目前定位");
+        resolve(true);
+      },
+      (error) => {
+        locating.value = false;
+        showToast(error.code === 1 ? "定位權限未開啟，先使用台北車站作為起點" : "定位失敗，先使用台北車站作為起點");
+        updateCriteria({
+          location: "taipei_main",
+          locationLabel: LOCATION_FALLBACK_LABEL,
+          locationSource: "fallback",
+          lat: null,
+          lon: null,
+        });
+        resolve(false);
+      },
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 120000 },
+    );
+  });
+}
+
 async function findStops() {
   if (!criteria.mood) return;
+  if (criteria.locationSource !== "gps") await locateUser();
   loading.value = true;
   try {
     const data = await getRecommendations({ ...criteria });
@@ -116,47 +170,47 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="prototype-shell">
-    <div class="phone">
-      <div class="phone-screen">
-        <HomeView
-          v-if="routeName === 'home'"
-          :criteria="criteria"
-          :loading="loading"
-          :saved-count="saved.length"
-          @update:criteria="updateCriteria"
-          @find="findStops"
-          @navigate="navigate"
-        />
-        <ResultsView
-          v-else-if="routeName === 'results'"
-          :criteria="criteria"
-          :results="results"
-          :saved-ids="savedIds"
-          @navigate="navigate"
-          @view="(id) => navigate(`/place/${id}`)"
-          @toggle-save="toggleSave"
-        />
-        <DetailView
-          v-else-if="routeName === 'detail'"
-          :place-id="activePlaceId"
-          :fallback-place="fallbackPlace(activePlaceId)"
-          :criteria="criteria"
-          :saved="savedIds.includes(activePlaceId)"
-          @navigate="navigate"
-          @toggle-save="toggleSave"
-          @toast="showToast"
-        />
-        <SavedView
-          v-else-if="routeName === 'saved'"
-          :saved="saved"
-          @navigate="navigate"
-          @remove="removeSaved"
-          @update-note="updateNote"
-        />
-        <BottomNav :route="route" :saved-count="saved.length" @navigate="navigate" />
-        <Toast :message="toastMessage" />
-      </div>
+  <div class="app-shell">
+    <div class="app-surface">
+      <HomeView
+        v-if="routeName === 'home'"
+        :criteria="criteria"
+        :loading="loading"
+        :locating="locating"
+        :saved-count="saved.length"
+        @update:criteria="updateCriteria"
+        @locate="locateUser"
+        @find="findStops"
+        @navigate="navigate"
+      />
+      <ResultsView
+        v-else-if="routeName === 'results'"
+        :criteria="criteria"
+        :results="results"
+        :saved-ids="savedIds"
+        @navigate="navigate"
+        @view="(id) => navigate(`/place/${id}`)"
+        @toggle-save="toggleSave"
+      />
+      <DetailView
+        v-else-if="routeName === 'detail'"
+        :place-id="activePlaceId"
+        :fallback-place="fallbackPlace(activePlaceId)"
+        :criteria="criteria"
+        :saved="savedIds.includes(activePlaceId)"
+        @navigate="navigate"
+        @toggle-save="toggleSave"
+        @toast="showToast"
+      />
+      <SavedView
+        v-else-if="routeName === 'saved'"
+        :saved="saved"
+        @navigate="navigate"
+        @remove="removeSaved"
+        @update-note="updateNote"
+      />
+      <BottomNav :route="route" :saved-count="saved.length" @navigate="navigate" />
+      <Toast :message="toastMessage" />
     </div>
   </div>
 </template>
