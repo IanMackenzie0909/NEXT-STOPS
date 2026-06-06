@@ -1,9 +1,4 @@
-"""Foursquare Places client.
-
-The base URL is configurable because Foursquare has been migrating legacy endpoints.
-Default uses the widely deployed v3 Places Search endpoint. Set FOURSQUARE_BASE_URL
-in your own wrapper if your account is provisioned for a newer Places API host.
-"""
+"""Foursquare Places client."""
 
 from __future__ import annotations
 
@@ -20,21 +15,31 @@ from ..core.models import Place
 class FoursquarePlacesClient(BaseHttpClient):
     source_name = "foursquare"
 
-    def __init__(self, api_key: str | None = None, base_url: str | None = None, **kwargs):
+    def __init__(self, api_key: str | None = None, base_url: str | None = None, api_version: str | None = None, **kwargs):
         super().__init__(**kwargs)
         self.api_key = api_key or ApiKeys.from_env().foursquare_api_key
-        self.base_url = (base_url or os.getenv("FOURSQUARE_BASE_URL") or "https://api.foursquare.com/v3/places").rstrip("/")
+        self.base_url = (base_url or os.getenv("FOURSQUARE_BASE_URL") or "https://places-api.foursquare.com/places").rstrip("/")
+        self.api_version = api_version or os.getenv("FOURSQUARE_API_VERSION") or "2025-06-17"
 
     def _require_key(self) -> None:
         if not self.api_key:
             raise ClientConfigError("FOURSQUARE_API_KEY 尚未設定，略過 Foursquare。")
 
     def _headers(self) -> dict[str, str]:
-        return {"Authorization": self.api_key or "", "Accept": "application/json"}
+        return {
+            "Authorization": f"Bearer {self.api_key or ''}",
+            "Accept": "application/json",
+            "X-Places-Api-Version": self.api_version,
+        }
 
     def search_places(self, query: str | None, lat: float, lon: float, radius_m: int = 1500, limit: int = 20) -> list[dict]:
         self._require_key()
-        params = {"ll": f"{lat},{lon}", "radius": radius_m, "limit": limit}
+        params = {
+            "ll": f"{lat},{lon}",
+            "radius": radius_m,
+            "limit": limit,
+            "fields": "fsq_place_id,name,latitude,longitude,location,categories,distance,tel,website",
+        }
         if query:
             params["query"] = query
         url = f"{self.base_url}/search?{urlencode(params)}"
@@ -48,8 +53,8 @@ class FoursquarePlacesClient(BaseHttpClient):
         name = row.get("name")
         geocodes = row.get("geocodes") if isinstance(row.get("geocodes"), dict) else {}
         main = geocodes.get("main") if isinstance(geocodes.get("main"), dict) else {}
-        lat = to_float(main.get("latitude"))
-        lon = to_float(main.get("longitude"))
+        lat = to_float(row.get("latitude") or main.get("latitude"))
+        lon = to_float(row.get("longitude") or main.get("longitude"))
         if not name or not is_coordinate_in_taipei(lat, lon):
             return None
         location = row.get("location") if isinstance(row.get("location"), dict) else {}
@@ -57,7 +62,9 @@ class FoursquarePlacesClient(BaseHttpClient):
         for item in row.get("categories", []) or []:
             if isinstance(item, dict) and item.get("name"):
                 categories.append(item["name"])
-        fsq_id = row.get("fsq_id") or ""
+            elif isinstance(item, str):
+                categories.append(item)
+        fsq_id = row.get("fsq_place_id") or row.get("fsq_id") or ""
         return Place(
             id=make_canonical_id(str(name), location.get("district")),
             name=str(name),
@@ -70,6 +77,8 @@ class FoursquarePlacesClient(BaseHttpClient):
             source_ids={self.source_name: str(fsq_id)} if fsq_id else {},
             popularity=_normalize_popularity(row.get("popularity")),
             rating=_normalize_rating(row.get("rating")),
+            official_urls=[u for u in [row.get("website")] if u],
+            phone=row.get("tel"),
             sources=[self.source_name],
             raw=row,
         )

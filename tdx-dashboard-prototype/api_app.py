@@ -983,12 +983,12 @@ def primary_category(categories: list[str], text: str = "") -> str:
     blob = " ".join([*(categories or []), text]).lower()
     checks = [
         ("bookstore", r"書店|bookstore"),
-        ("riverside", r"河濱|riverside|river"),
+        ("riverside", r"河濱|水岸|碼頭|渡口|自行車道|riverside|river|pier|wharf|dock|waterfront"),
+        ("park", r"公園|森林|花園|步道|親山|登山|山系|park|trail"),
         ("museum", r"博物館|紀念館|museum"),
         ("gallery", r"美術館|藝文|藝術|gallery|文創"),
         ("restaurant", r"餐廳|restaurant|food|餐飲"),
         ("market", r"夜市|市場|market|商圈"),
-        ("park", r"公園|步道|山|湖|park|trail"),
         ("viewpoint", r"景觀|夜景|古蹟|景點|viewpoint|scenic|attraction|taipei_featured"),
         ("cafe", r"咖啡|cafe"),
     ]
@@ -1015,10 +1015,14 @@ def display_budget_from_price(price: str) -> str:
     return "flexible" if price == "high" else price
 
 
-def place_environment(category: str, categories: list[str]) -> tuple[bool, bool]:
-    blob = " ".join([category, *(categories or [])])
-    indoor = bool(re.search(r"museum|gallery|bookstore|restaurant|cafe|market|博物館|美術館|書店|餐廳|文創|紀念館|展覽|劇場|影城|會館|主題館|寺|廟|堂", blob))
-    outdoor = bool(re.search(r"park|riverside|viewpoint|market|公園|河濱|步道|景觀|夜市|古蹟", blob))
+def place_environment(category: str, categories: list[str], text: str = "") -> tuple[bool, bool]:
+    blob = " ".join([category, *(categories or []), text]).lower()
+    indoor_pattern = r"museum|gallery|bookstore|restaurant|cafe|博物館|美術館|書店|餐廳|咖啡|文創|紀念館|展覽|劇場|影城|會館|主題館|圖書館|商場|購物中心|旅館|飯店|寺|廟|宮|堂"
+    outdoor_pattern = r"park|riverside|viewpoint|trail|公園|森林|花園|河濱|水岸|碼頭|渡口|步道|親山|登山|山系|自行車道|廣場|露天|景觀|觀景|夜市|古蹟"
+    indoor = bool(re.search(indoor_pattern, blob))
+    outdoor = bool(re.search(outdoor_pattern, blob))
+    if outdoor and not indoor:
+        return False, True
     if not indoor and not outdoor:
         outdoor = True
     return indoor, outdoor
@@ -1100,7 +1104,7 @@ def normalize_place_payload(raw: dict[str, Any], criteria: dict[str, Any], conte
         else max(8, round(distance_m / 420)) if distance_m is not None else max(12, round(float(criteria.get("distance") or 30) * 0.8))
     )
     price = place_price(category, categories)
-    indoor, outdoor = place_environment(category, categories)
+    indoor, outdoor = place_environment(category, categories, text)
     open_status = raw_open_status(raw)
     open_now = open_status.get("open_now") is True
 

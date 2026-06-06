@@ -19,12 +19,14 @@ const routeData = ref(null);
 const mapStatus = ref("地圖準備中");
 const mapContainer = ref(null);
 const loading = ref(true);
+const descriptionExpanded = ref(false);
 const travelTime = computed(() => place.value?.matched_travel_time ?? place.value?.travel_time_minutes ?? 0);
 const commute = computed(() => routeData.value?.best || place.value?.commute || null);
 const commuteInfo = computed(() => commuteParts(commute.value, travelTime.value));
 const detailWeatherChips = computed(() => weatherChips(context.value, place.value?.weather_summary));
 const detailAqiChip = computed(() => aqiChip(context.value, place.value?.aqi_value, place.value?.aqi_status));
 const backupOptions = computed(() => Array.isArray(place.value?.backup_options) ? place.value.backup_options.filter(Boolean).slice(0, 3) : []);
+const descriptionShouldCollapse = computed(() => String(place.value?.description || "").length > 220);
 const origin = computed(() => (
   props.criteria.lat !== null && props.criteria.lat !== undefined && props.criteria.lon !== null && props.criteria.lon !== undefined
     ? { lat: props.criteria.lat, lon: props.criteria.lon }
@@ -216,6 +218,7 @@ watch(() => props.placeId, () => {
   place.value = props.fallbackPlace;
   context.value = null;
   routeData.value = null;
+  descriptionExpanded.value = false;
   loadPlace();
 });
 </script>
@@ -248,7 +251,17 @@ watch(() => props.placeId, () => {
 
       <aside class="detail-sidebar">
         <section class="detail-copy">
-          <p>{{ place.description }}</p>
+          <div class="description-block" :class="{ collapsed: descriptionShouldCollapse && !descriptionExpanded }">
+            <p>{{ place.description }}</p>
+          </div>
+          <button
+            v-if="descriptionShouldCollapse"
+            class="description-toggle"
+            type="button"
+            @click="descriptionExpanded = !descriptionExpanded"
+          >
+            {{ descriptionExpanded ? "收合說明" : "展開完整說明" }}
+          </button>
           <div class="detail-info-grid">
             <span class="info-chip commute-chip">
               <IconGlyph :name="commuteInfo.icon" />

@@ -124,6 +124,7 @@ function placeAqiChip(place) {
           </button>
         </div>
         <div class="card-footer">
+          <span class="score-pill">Match {{ place.score }}%</span>
           <button class="ghost-action" :class="{ saved: savedIds.includes(place.id) }" type="button" @click="emit('toggle-save', place)">
             {{ savedIds.includes(place.id) ? "Saved" : "Save" }}
           </button>
