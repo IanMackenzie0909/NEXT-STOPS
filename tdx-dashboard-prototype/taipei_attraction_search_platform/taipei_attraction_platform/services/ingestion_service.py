@@ -19,8 +19,8 @@ from ..core.index import PlaceIndex
 from ..core.models import Place
 
 
-DEFAULT_PUBLIC_SOURCES = ("taipei_open_data", "taipei_travel")
-DEFAULT_OPTIONAL_SOURCES = ("tdx_tourism", "overpass", "opentripmap", "geoapify", "foursquare")
+DEFAULT_PUBLIC_SOURCES = ("taipei_open_data", "tdx_tourism")
+DEFAULT_OPTIONAL_SOURCES = ("overpass", "opentripmap", "geoapify", "foursquare")
 
 # Taipei 101 as a safe default seed point for optional nearby APIs.
 DEFAULT_SEED_POINTS = [

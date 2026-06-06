@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from urllib.parse import urlencode
 
-from .base import BaseHttpClient
+import requests
+
+from .base import ApiClientError, BaseHttpClient
 from ..core.geo import to_float
 from ..core.merge import make_canonical_id
 from ..core.models import Place
@@ -24,8 +26,30 @@ class TaipeiTravelClient(BaseHttpClient):
         suffix = f"?{urlencode(clean)}" if clean else ""
         return f"{self.base_url}/{self.lang}/{path.lstrip('/')}{suffix}"
 
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Accept": "application/json, text/plain, */*",
+            "User-Agent": "NEXT-STOPS/1.0 (+https://github.com/next-stops)",
+            "Referer": "https://www.travel.taipei/open-api/swagger/ui/index",
+        }
+
+    def _request_travel_json(self, url: str) -> dict:
+        try:
+            response = self.session.get(url, timeout=self.timeout, headers=self._headers())
+            if response.status_code == 403 and "Just a moment" in response.text:
+                raise ApiClientError(
+                    "Taipei Travel Open API is currently blocked by Cloudflare challenge "
+                    "for non-browser HTTP clients. Use TDX Tourism as the primary attraction source."
+                )
+            response.raise_for_status()
+            return response.json()
+        except ApiClientError:
+            raise
+        except (requests.RequestException, ValueError) as exc:
+            raise ApiClientError(f"API request failed: {url}: {exc}") from exc
+
     def get_attractions_page(self, page: int = 1, category_id: int | None = None) -> dict:
-        return self.request_json("GET", self._url("Attractions/All", page=page, categoryIds=category_id))
+        return self._request_travel_json(self._url("Attractions/All", page=page, categoryIds=category_id))
 
     def get_all_attractions(self, max_pages: int | None = None) -> list[dict]:
         rows: list[dict] = []
@@ -45,7 +69,7 @@ class TaipeiTravelClient(BaseHttpClient):
         return rows
 
     def get_categories(self) -> dict:
-        return self.request_json("GET", self._url("Miscellaneous/Categories"))
+        return self._request_travel_json(self._url("Miscellaneous/Categories"))
 
     def get_places(self, max_pages: int | None = None) -> list[Place]:
         places: list[Place] = []
