@@ -34,8 +34,12 @@ PROJECT_ROOT = ROOT.parent
 ATTRACTION_PLATFORM_ROOT = ROOT / "taipei_attraction_search_platform"
 ATTRACTION_CACHE = ATTRACTION_PLATFORM_ROOT / "data" / "taipei_places.json"
 RECOMMENDATION_DB = Path(os.getenv("NEXT_STOPS_DB_PATH", ROOT / "data" / "next_stops.sqlite3"))
+GOOGLE_DIRECTIONS_URL = "https://maps.googleapis.com/maps/api/directions/json"
+GOOGLE_GEOCODING_URL = "https://maps.googleapis.com/maps/api/geocode/json"
+DEFAULT_MAPBOX_TOKEN = "your_mapbox_access_token"
 MAX_STATION_RESULTS = 300
 TDX_REQUEST_RETRIES = 2
+ROUTE_COMPARE_MODES = ("TRANSIT", "WALKING", "DRIVING")
 
 SAMPLE_LOCATIONS = [
     {"name": "臺北車站", "lat": 25.0478, "lon": 121.5170},
@@ -92,6 +96,12 @@ CATEGORY_LABELS = {
     "scenic_spot": "景點",
     "attraction": "景點",
     "taipei_featured": "精選景點",
+}
+
+COMMUTE_MODE_LABELS = {
+    "TRANSIT": "大眾運輸",
+    "WALKING": "步行",
+    "DRIVING": "開車",
 }
 
 
@@ -272,6 +282,222 @@ def haversine_m(lat1: float | None, lon1: float | None, lat2: float | None, lon2
     delta_lambda = math.radians(float(lon2) - float(lon1))
     a = math.sin(delta_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
     return radius * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def get_google_maps_key() -> str:
+    return env_first("GOOGLE_MAPS_SERVER_KEY", "GOOGLE_MAPS_API_KEY", "GOOGLE_MAPS_BROWSER_KEY")
+
+
+def get_mapbox_token() -> str:
+    return env_first("MAPBOX_ACCESS_TOKEN", default=DEFAULT_MAPBOX_TOKEN)
+
+
+def decode_polyline(polyline: str) -> list[list[float]]:
+    coordinates = []
+    index = 0
+    lat = 0
+    lng = 0
+
+    while index < len(polyline):
+        shift = 0
+        result = 0
+        while True:
+            byte = ord(polyline[index]) - 63
+            index += 1
+            result |= (byte & 0x1F) << shift
+            shift += 5
+            if byte < 0x20:
+                break
+        lat += ~(result >> 1) if result & 1 else result >> 1
+
+        shift = 0
+        result = 0
+        while True:
+            byte = ord(polyline[index]) - 63
+            index += 1
+            result |= (byte & 0x1F) << shift
+            shift += 5
+            if byte < 0x20:
+                break
+        lng += ~(result >> 1) if result & 1 else result >> 1
+        coordinates.append([lng / 100000.0, lat / 100000.0])
+
+    return coordinates
+
+
+def format_duration(seconds: int | float | None) -> str:
+    if seconds is None:
+        return "--"
+    minutes = max(1, round(float(seconds) / 60))
+    if minutes < 60:
+        return f"{minutes} 分"
+    hours = minutes // 60
+    rest = minutes % 60
+    return f"{hours} 小時 {rest} 分" if rest else f"{hours} 小時"
+
+
+def format_distance(meters: int | float | None) -> str:
+    if meters is None:
+        return "--"
+    meters = float(meters)
+    if meters >= 1000:
+        return f"{meters / 1000:.1f} 公里"
+    return f"{round(meters)} 公尺"
+
+
+def google_directions(origin: dict[str, Any], destination: dict[str, Any], mode: str, include_geometry: bool = False) -> dict[str, Any]:
+    key = get_google_maps_key()
+    if not key:
+        raise RuntimeError("Google Maps API key is not configured")
+
+    google_mode = {
+        "TRANSIT": "transit",
+        "WALKING": "walking",
+        "DRIVING": "driving",
+    }.get(mode, "transit")
+    response = requests.get(
+        GOOGLE_DIRECTIONS_URL,
+        params={
+            "origin": f"{origin['lat']},{origin['lon']}",
+            "destination": f"{destination['lat']},{destination['lon']}",
+            "mode": google_mode,
+            "region": "tw",
+            "language": "zh-TW",
+            "key": key,
+        },
+        timeout=10,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    status = payload.get("status")
+    if status != "OK":
+        raise RuntimeError(payload.get("error_message") or status or "Google Directions failed")
+
+    route = payload["routes"][0]
+    leg = route["legs"][0]
+    result = {
+        "provider": "google",
+        "mode": mode,
+        "mode_label": COMMUTE_MODE_LABELS.get(mode, mode),
+        "distance_text": leg.get("distance", {}).get("text", ""),
+        "distance_meters": leg.get("distance", {}).get("value"),
+        "duration_text": leg.get("duration", {}).get("text", ""),
+        "duration_seconds": leg.get("duration", {}).get("value"),
+        "summary": route.get("summary", ""),
+        "origin": {
+            "lat": origin["lat"],
+            "lon": origin["lon"],
+            "address": leg.get("start_address", ""),
+        },
+        "destination": {
+            "lat": destination["lat"],
+            "lon": destination["lon"],
+            "address": leg.get("end_address", ""),
+        },
+    }
+    if include_geometry:
+        result["geometry"] = {
+            "type": "LineString",
+            "coordinates": decode_polyline(route["overview_polyline"]["points"]),
+        }
+    return result
+
+
+def google_geocode(query: str) -> dict[str, Any] | None:
+    key = get_google_maps_key()
+    if not key or not query.strip():
+        return None
+    response = requests.get(
+        GOOGLE_GEOCODING_URL,
+        params={
+            "address": query,
+            "region": "tw",
+            "language": "zh-TW",
+            "key": key,
+        },
+        timeout=10,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("status") != "OK" or not payload.get("results"):
+        return None
+    result = payload["results"][0]
+    location = result.get("geometry", {}).get("location", {})
+    lat = to_float(location.get("lat"))
+    lon = to_float(location.get("lng"))
+    if lat is None or lon is None:
+        return None
+    return {
+        "lat": lat,
+        "lon": lon,
+        "address": result.get("formatted_address", ""),
+        "place_id": result.get("place_id", ""),
+    }
+
+
+def fallback_commute(origin: dict[str, Any], destination: dict[str, Any], mode: str, include_geometry: bool = False) -> dict[str, Any]:
+    distance = haversine_m(origin.get("lat"), origin.get("lon"), destination.get("lat"), destination.get("lon")) or 0
+    speed_mps = {
+        "WALKING": 1.25,
+        "TRANSIT": 5.8,
+        "DRIVING": 7.5,
+    }.get(mode, 5.8)
+    overhead_seconds = {
+        "WALKING": 0,
+        "TRANSIT": 420,
+        "DRIVING": 300,
+    }.get(mode, 300)
+    seconds = max(60, round(distance / speed_mps + overhead_seconds))
+    result = {
+        "provider": "heuristic",
+        "mode": mode,
+        "mode_label": COMMUTE_MODE_LABELS.get(mode, mode),
+        "distance_text": format_distance(distance),
+        "distance_meters": round(distance),
+        "duration_text": format_duration(seconds),
+        "duration_seconds": seconds,
+        "summary": "heuristic fallback",
+        "origin": {"lat": origin.get("lat"), "lon": origin.get("lon")},
+        "destination": {"lat": destination.get("lat"), "lon": destination.get("lon")},
+    }
+    if include_geometry:
+        result["geometry"] = {
+            "type": "LineString",
+            "coordinates": [
+                [origin.get("lon"), origin.get("lat")],
+                [destination.get("lon"), destination.get("lat")],
+            ],
+        }
+    return result
+
+
+def compare_commute_options(
+    origin: dict[str, Any],
+    destination: dict[str, Any],
+    modes: tuple[str, ...] = ROUTE_COMPARE_MODES,
+    include_geometry: bool = False,
+) -> dict[str, Any]:
+    options = []
+    errors = {}
+    for mode in modes:
+        try:
+            option = google_directions(origin, destination, mode, include_geometry=include_geometry)
+        except Exception as exc:
+            errors[mode] = str(exc)
+            option = fallback_commute(origin, destination, mode, include_geometry=include_geometry)
+        options.append(option)
+
+    best = min(options, key=lambda item: item.get("duration_seconds") or 999999)
+    if include_geometry and "geometry" not in best:
+        best = {
+            **best,
+            **fallback_commute(origin, destination, best["mode"], include_geometry=True),
+        }
+    return {
+        "best": best,
+        "options": options,
+        "errors": errors,
+    }
 
 
 def get_attraction_service() -> TaipeiAttractionSearchService:
@@ -587,7 +813,45 @@ def normalize_place_payload(raw: dict[str, Any], criteria: dict[str, Any], conte
     if quality > 1:
         quality /= 100
     distance_m = to_float(raw.get("distance_m"))
-    travel_time = max(8, round(distance_m / 420)) if distance_m is not None else max(12, round(float(criteria.get("distance") or 30) * 0.8))
+    origin = criteria_location(criteria)
+    destination = {
+        "lat": to_float(raw.get("lat")),
+        "lon": to_float(raw.get("lon") if raw.get("lon") is not None else raw.get("lng")),
+    }
+    geocoded = None
+    if destination["lat"] is None or destination["lon"] is None:
+        geocode_query = " ".join(
+            str(part)
+            for part in [
+                raw.get("name"),
+                raw.get("address"),
+                raw.get("district"),
+                "臺北市",
+            ]
+            if part
+        )
+        try:
+            geocoded = google_geocode(geocode_query)
+        except Exception:
+            geocoded = None
+        if geocoded:
+            destination = {"lat": geocoded["lat"], "lon": geocoded["lon"]}
+            raw = {
+                **raw,
+                "lat": geocoded["lat"],
+                "lon": geocoded["lon"],
+                "address": raw.get("address") or geocoded.get("address"),
+                "geocoded": True,
+                "geocoded_place_id": geocoded.get("place_id"),
+            }
+    commute = None
+    if destination["lat"] is not None and destination["lon"] is not None:
+        commute = compare_commute_options(origin, destination)
+    travel_time = (
+        max(1, round(float(commute["best"]["duration_seconds"]) / 60))
+        if commute
+        else max(8, round(distance_m / 420)) if distance_m is not None else max(12, round(float(criteria.get("distance") or 30) * 0.8))
+    )
     price = place_price(category, categories)
     indoor, outdoor = place_environment(category, categories)
 
@@ -599,7 +863,7 @@ def normalize_place_payload(raw: dict[str, Any], criteria: dict[str, Any], conte
         travel_time=float(travel_time),
         price=price,
         open_now=True,
-        reachable=raw.get("lat") is not None and (raw.get("lon") is not None or raw.get("lng") is not None),
+        reachable=destination["lat"] is not None and destination["lon"] is not None,
         data_valid=bool(raw.get("id") and raw.get("name")),
         is_event=False,
         event_active=True,
@@ -622,13 +886,19 @@ def normalize_place_payload(raw: dict[str, Any], criteria: dict[str, Any], conte
         "description": raw.get("description") or "資料來自台北景點搜尋平台，並由後端推薦引擎重新評分。",
         "matched_travel_time": travel_time,
         "travel_time_minutes": travel_time,
+        "commute": commute["best"] if commute else None,
+        "commute_options": commute["options"] if commute else [],
         "budget": display_budget_from_price(price),
         "weather_status": "watch" if outdoor and rain_probability_from_context(context) >= 0.45 else "suitable" if indoor else "any",
         "weather_summary": context.get("weather", {}).get("summary") or "天氣資料已納入後端評分",
         "aqi_value": context.get("air_quality", {}).get("aqi") or "--",
         "aqi_status": context.get("air_quality", {}).get("status") or "unknown",
         "open_now": True,
-        "route_hint": "已納入距離與即時情境評分；實際路線請用地圖確認。",
+        "route_hint": (
+            f"最快約 {commute['best']['duration_text']}，建議方式：{commute['best']['mode_label']}。"
+            if commute
+            else "已納入距離與即時情境評分；實際路線請用地圖確認。"
+        ),
         "rating": raw.get("rating") or round((3.8 + place.quality * 1.1) * 10) / 10,
     }
     return {"algorithm_place": place, "display": display}
@@ -636,27 +906,44 @@ def normalize_place_payload(raw: dict[str, Any], criteria: dict[str, Any], conte
 
 def collect_candidate_places(criteria: dict[str, Any], context: dict[str, Any], limit: int) -> list[dict[str, Any]]:
     location = criteria_location(criteria)
-    radius_m = max(1200, int(float(criteria.get("distance") or 30) * 90))
+    base_radius_m = max(1200, int(float(criteria.get("distance") or 30) * 90))
+    radius_steps = []
+    for radius in (base_radius_m, 2500, 5000, 10000):
+        if radius not in radius_steps:
+            radius_steps.append(radius)
     queries = MOOD_QUERIES.get(str(criteria.get("mood") or "relaxing_walk"), [""])
     collected: dict[str, dict[str, Any]] = {}
 
-    for query in queries:
-        for item in search_attraction_places(
-            q=query,
-            lat=location["lat"],
-            lon=location["lon"],
-            radius_m=radius_m,
-            limit=max(18, limit * 5),
-        ):
-            collected.setdefault(str(item.get("id")), item)
+    for radius_m in radius_steps:
+        for query in queries:
+            for item in search_attraction_places(
+                q=query,
+                lat=location["lat"],
+                lon=location["lon"],
+                radius_m=radius_m,
+                limit=max(18, limit * 5),
+            ):
+                collected.setdefault(str(item.get("id")), item)
+        if len(collected) >= limit * 2:
+            break
 
-    if len(collected) < limit * 2:
+    for radius_m in radius_steps:
+        if len(collected) >= limit * 2:
+            break
         for item in search_attraction_places(
             lat=location["lat"],
             lon=location["lon"],
             radius_m=radius_m,
             limit=max(24, limit * 6),
         ):
+            collected.setdefault(str(item.get("id")), item)
+
+    if not collected:
+        fallback_results = get_attraction_service().search(
+            limit=max(50, limit * 12),
+            include_missing_coordinates=True,
+        )
+        for item in serialize_search_results(fallback_results):
             collected.setdefault(str(item.get("id")), item)
 
     return [normalize_place_payload(item, criteria, context) for item in collected.values()]
@@ -840,6 +1127,35 @@ def sample_locations():
 @app.get("/api/context")
 def next_stops_context(lat: float, lon: float, real: bool = False):
     return run_or_raise(lambda: weather_aqi_client.real_context(lat, lon) if real else weather_aqi_client.context(lat, lon))
+
+
+@app.get("/api/mapbox-config")
+def mapbox_config():
+    token = get_mapbox_token()
+    if not token or token == DEFAULT_MAPBOX_TOKEN:
+        return {"access_token": "", "configured": False}
+    return {"access_token": token, "configured": True}
+
+
+@app.post("/api/route")
+def api_route(payload: dict[str, Any] | None = Body(default=None)):
+    def build_route():
+        data = payload or {}
+        origin = data.get("origin") or {}
+        destination = data.get("destination") or {}
+        if origin.get("lng") is not None and origin.get("lon") is None:
+            origin["lon"] = origin.get("lng")
+        if destination.get("lng") is not None and destination.get("lon") is None:
+            destination["lon"] = destination.get("lng")
+        if to_float(origin.get("lat")) is None or to_float(origin.get("lon")) is None:
+            raise ValueError("origin.lat and origin.lon are required")
+        if to_float(destination.get("lat")) is None or to_float(destination.get("lon")) is None:
+            raise ValueError("destination.lat and destination.lon are required")
+        normalized_origin = {"lat": to_float(origin["lat"]), "lon": to_float(origin["lon"])}
+        normalized_destination = {"lat": to_float(destination["lat"]), "lon": to_float(destination["lon"])}
+        return compare_commute_options(normalized_origin, normalized_destination, include_geometry=True)
+
+    return run_or_raise(build_route)
 
 
 @app.get("/api/weather-aqi")

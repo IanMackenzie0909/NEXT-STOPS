@@ -68,6 +68,34 @@ export async function getContext(lat, lon) {
   return fetchJson(DATA_API_BASE, `/api/context?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`);
 }
 
+export async function getMapboxConfig() {
+  return fetchJson(DATA_API_BASE, "/api/mapbox-config");
+}
+
+export async function getRoute(origin, destination) {
+  return fetchJson(DATA_API_BASE, "/api/route", {
+    method: "POST",
+    body: JSON.stringify({ origin, destination }),
+  });
+}
+
+export function googleDirectionsUrl(origin, destination, mode = "TRANSIT") {
+  const travelmode = {
+    TRANSIT: "transit",
+    WALKING: "walking",
+    DRIVING: "driving",
+  }[mode] || "transit";
+  const params = new URLSearchParams({
+    api: "1",
+    destination: `${destination.lat},${destination.lon ?? destination.lng}`,
+    travelmode,
+  });
+  if (origin?.lat && (origin.lon || origin.lng)) {
+    params.set("origin", `${origin.lat},${origin.lon ?? origin.lng}`);
+  }
+  return `https://www.google.com/maps/dir/?${params.toString()}`;
+}
+
 async function searchPlaces(params) {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params || {})) {
@@ -86,8 +114,12 @@ function normalizeRecommendationResult(place) {
     lng: place.lon ?? place.lng,
     lon: place.lon ?? place.lng,
     score: Math.round(Number(place.score ?? place.algorithm?.score * 100 ?? 0)),
-    matched_travel_time: place.matched_travel_time ?? place.travel_time_minutes ?? 28,
-    travel_time_minutes: place.travel_time_minutes ?? place.matched_travel_time ?? 28,
+    matched_travel_time: place.commute?.duration_seconds
+      ? Math.round(place.commute.duration_seconds / 60)
+      : place.matched_travel_time ?? place.travel_time_minutes ?? 28,
+    travel_time_minutes: place.commute?.duration_seconds
+      ? Math.round(place.commute.duration_seconds / 60)
+      : place.travel_time_minutes ?? place.matched_travel_time ?? 28,
     weather_summary: place.weather_summary || place.context?.weather?.summary || "天氣資料已納入評分",
     aqi_value: place.aqi_value ?? place.context?.air_quality?.aqi ?? "--",
     aqi_status: place.aqi_status || place.context?.air_quality?.status || "unknown",

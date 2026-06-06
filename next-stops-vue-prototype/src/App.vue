@@ -27,6 +27,7 @@ const results = ref([]);
 const saved = ref([]);
 const loading = ref(false);
 const locating = ref(false);
+const recommendationError = ref("");
 const toastMessage = ref("");
 let toastTimer;
 
@@ -43,6 +44,14 @@ function navigate(path) {
   const target = path || "/";
   if (window.location.hash.replace(/^#/, "") === target) route.value = target;
   else window.location.hash = target;
+}
+
+function handleNavigate(path) {
+  if (path === "/results" && !results.value.length && !loading.value) {
+    findStops();
+    return;
+  }
+  navigate(path);
 }
 
 function updateCriteria(updates) {
@@ -97,15 +106,25 @@ function locateUser() {
 }
 
 async function findStops() {
+  if (loading.value) return;
   if (!criteria.mood) return;
-  if (criteria.locationSource !== "gps") await locateUser();
   loading.value = true;
+  recommendationError.value = "";
+  results.value = [];
+  navigate("/results");
   try {
+    if (criteria.locationSource !== "gps") await locateUser();
     const data = await getRecommendations({ ...criteria });
     results.value = data.results || [];
-    navigate("/results");
+    if (!results.value.length) {
+      recommendationError.value = data.request_id
+        ? `後端已完成推薦請求 ${data.request_id}，但沒有回傳任何地點。請檢查景點資料 cache 或推薦篩選條件。`
+        : "後端已回應，但沒有回傳任何推薦地點。請檢查景點資料 cache 或推薦篩選條件。";
+    }
   } catch (error) {
-    showToast(`推薦資料無法取得：${error.message}`);
+    recommendationError.value = error.message || "推薦資料無法取得";
+    console.error("NEXT STOPS recommendation failed:", error);
+    showToast(`推薦資料無法取得：${recommendationError.value}`);
   } finally {
     loading.value = false;
   }
@@ -181,14 +200,17 @@ onMounted(() => {
         @update:criteria="updateCriteria"
         @locate="locateUser"
         @find="findStops"
-        @navigate="navigate"
+        @navigate="handleNavigate"
       />
       <ResultsView
         v-else-if="routeName === 'results'"
         :criteria="criteria"
         :results="results"
         :saved-ids="savedIds"
-        @navigate="navigate"
+        :loading="loading || locating"
+        :error="recommendationError"
+        @navigate="handleNavigate"
+        @find="findStops"
         @view="(id) => navigate(`/place/${id}`)"
         @toggle-save="toggleSave"
       />
@@ -209,7 +231,7 @@ onMounted(() => {
         @remove="removeSaved"
         @update-note="updateNote"
       />
-      <BottomNav :route="route" :saved-count="saved.length" @navigate="navigate" />
+      <BottomNav :route="route" :saved-count="saved.length" @navigate="handleNavigate" />
       <Toast :message="toastMessage" />
     </div>
   </div>

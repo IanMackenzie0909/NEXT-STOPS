@@ -36,30 +36,11 @@ function patch(updates) {
       </button>
     </header>
 
-    <section class="next-card">
-      <div class="card-kicker">
-        <span>YOUR NEXT STOP</span>
-        <strong>{{ criteria.mood ? MOODS.find((item) => item.id === criteria.mood)?.short : "Set" }}</strong>
-      </div>
-      <div class="soft-map" aria-hidden="true">
-        <div class="route-line"></div>
-        <div class="pin one"></div>
-        <div class="pin two"></div>
-      </div>
-      <h2>Find a calm stop nearby</h2>
-      <p>依照心情、時間、天氣偏好與出發區域，挑一個現在能去的臺北地點。</p>
-      <div class="metric-row">
-        <span>{{ formatTime(criteria.time) }}</span>
-        <span>{{ criteria.locationLabel || LOCATION_FALLBACK_LABEL }}</span>
-        <span>{{ WEATHER_LABELS[criteria.weatherPreference] }}</span>
-      </div>
-    </section>
-
     <section class="choice-panel">
       <div class="panel-head">
         <AppIcon />
         <div>
-          <h2>Set today</h2>
+          <h2>Find a calm stop nearby</h2>
           <p>用少量訊號讓推薦足夠可用。</p>
         </div>
       </div>
