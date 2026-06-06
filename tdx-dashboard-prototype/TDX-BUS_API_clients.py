@@ -1,13 +1,39 @@
 import math
+import os
 import requests
 import time
 import unicodedata
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote
 
 
-client_id = 'your_TDX_client_id'  # your_TDX_client_id
-client_secret = 'your_TDX_client_secret'  # your_TDX_client_secret
+ROOT = Path(__file__).resolve().parent
+
+
+def load_root_env():
+    env_path = ROOT.parent / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def env_first(*names, default=""):
+    load_root_env()
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return default
+
+
+client_id = env_first('TDX_BUS_CLIENT_ID', 'TDX_CLIENT_ID', default='your_TDX_BUS_client_id')
+client_secret = env_first('TDX_BUS_CLIENT_SECRET', 'TDX_CLIENT_SECRET', default='your_TDX_BUS_client_secret')
 
 BASE_URL = 'https://tdx.transportdata.tw/api/basic/v2'
 DEFAULT_CITY = 'Taipei'

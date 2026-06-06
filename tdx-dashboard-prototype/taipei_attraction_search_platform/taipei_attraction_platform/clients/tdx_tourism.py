@@ -25,7 +25,7 @@ class TdxTourismClient(BaseHttpClient):
 
     def _require_credentials(self) -> None:
         if not self.client_id or not self.client_secret:
-            raise ClientConfigError("TDX_CLIENT_ID / TDX_CLIENT_SECRET 尚未設定，略過 TDX Tourism。")
+            raise ClientConfigError("TDX_TOURISM_CLIENT_ID / TDX_TOURISM_CLIENT_SECRET 尚未設定，略過 TDX Tourism。")
 
     def get_token(self) -> str:
         self._require_credentials()

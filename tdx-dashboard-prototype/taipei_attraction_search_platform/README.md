@@ -112,17 +112,18 @@ python -m taipei_attraction_platform districts
 
 ## 4. API Keys 設定
 
-複製 `.env.example` 後填入自己的 key：
+API key 已統一放在 repo 根目錄的 `.env`：
 
 ```bash
+cd ../../..
 cp .env.example .env
 ```
 
-目前程式不強制讀 `.env`，你可以用系統環境變數設定：
+Attraction search platform 會讀取 `NEXT-STOPS/.env`。若要改用系統環境變數，可設定：
 
 ```bash
-export TDX_CLIENT_ID="你的 TDX client id"
-export TDX_CLIENT_SECRET="你的 TDX client secret"
+export TDX_TOURISM_CLIENT_ID="你的 TDX Tourism client id"
+export TDX_TOURISM_CLIENT_SECRET="你的 TDX Tourism client secret"
 export OPENTRIPMAP_API_KEY="你的 OpenTripMap key"
 export GEOAPIFY_API_KEY="你的 Geoapify key"
 export FOURSQUARE_API_KEY="你的 Foursquare key"
@@ -131,8 +132,8 @@ export FOURSQUARE_API_KEY="你的 Foursquare key"
 Windows PowerShell：
 
 ```powershell
-$env:TDX_CLIENT_ID="你的 TDX client id"
-$env:TDX_CLIENT_SECRET="你的 TDX client secret"
+$env:TDX_TOURISM_CLIENT_ID="你的 TDX Tourism client id"
+$env:TDX_TOURISM_CLIENT_SECRET="你的 TDX Tourism client secret"
 $env:OPENTRIPMAP_API_KEY="你的 OpenTripMap key"
 $env:GEOAPIFY_API_KEY="你的 Geoapify key"
 $env:FOURSQUARE_API_KEY="你的 Foursquare key"

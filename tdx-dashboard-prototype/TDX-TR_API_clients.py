@@ -1,10 +1,36 @@
+import os
 import requests
 import unicodedata
 from datetime import datetime, time, timedelta
+from pathlib import Path
 
 
-client_id = 'your_TDX_client_id'  # your_TDX_client_id
-client_secret = 'your_TDX_client_secret'  # your_TDX_client_secret
+ROOT = Path(__file__).resolve().parent
+
+
+def load_root_env():
+    env_path = ROOT.parent / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def env_first(*names, default=""):
+    load_root_env()
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return default
+
+
+client_id = env_first('TDX_TR_CLIENT_ID', 'TDX_CLIENT_ID', default='your_TDX_TR_client_id')
+client_secret = env_first('TDX_TR_CLIENT_SECRET', 'TDX_CLIENT_SECRET', default='your_TDX_TR_client_secret')
 
 
 class TDX():

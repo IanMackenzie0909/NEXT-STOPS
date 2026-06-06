@@ -107,6 +107,14 @@ def load_root_env() -> None:
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
+def env_first(*names: str, default: str = "") -> str:
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return default
+
+
 def load_module(module_name: str, filename: str):
     module_path = ROOT / filename
     return load_module_from_path(module_name, module_path)
@@ -151,10 +159,11 @@ app.add_middleware(
 
 
 class CachedTDX:
-    def __init__(self, module):
+    def __init__(self, module, env_prefix: str):
         self.module = module
-        self.client_id = os.getenv("TDX_CLIENT_ID", module.client_id)
-        self.client_secret = os.getenv("TDX_CLIENT_SECRET", module.client_secret)
+        self.env_prefix = env_prefix
+        self.client_id = env_first(f"{env_prefix}_CLIENT_ID", "TDX_CLIENT_ID", default=module.client_id)
+        self.client_secret = env_first(f"{env_prefix}_CLIENT_SECRET", "TDX_CLIENT_SECRET", default=module.client_secret)
         self._token = ""
         self._token_expires_at = 0.0
         self._lock = threading.Lock()
@@ -194,8 +203,8 @@ class CachedTDX:
         return []
 
 
-bus_tdx = CachedTDX(bus_module)
-mrt_tdx = CachedTDX(mrt_module)
+bus_tdx = CachedTDX(bus_module, "TDX_BUS")
+mrt_tdx = CachedTDX(mrt_module, "TDX_MRT")
 weather_aqi_client = weather_aqi_module.WeatherAQIClient()
 bus_station_cache: dict[str, dict[str, Any]] = {}
 mrt_stations_cache: dict[str, Any] = {"items": [], "fetched_at": None}

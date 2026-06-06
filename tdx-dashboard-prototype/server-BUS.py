@@ -24,8 +24,8 @@ spec.loader.exec_module(tdx_module)
 BASE_URL = tdx_module.BASE_URL
 DEFAULT_CITY = os.getenv("TDX_BUS_CITY", tdx_module.DEFAULT_CITY)
 
-client_id = os.getenv("TDX_CLIENT_ID", tdx_module.client_id)
-client_secret = os.getenv("TDX_CLIENT_SECRET", tdx_module.client_secret)
+client_id = os.getenv("TDX_BUS_CLIENT_ID") or os.getenv("TDX_CLIENT_ID") or tdx_module.client_id
+client_secret = os.getenv("TDX_BUS_CLIENT_SECRET") or os.getenv("TDX_CLIENT_SECRET") or tdx_module.client_secret
 
 
 class CachedTDX(tdx_module.TDX):

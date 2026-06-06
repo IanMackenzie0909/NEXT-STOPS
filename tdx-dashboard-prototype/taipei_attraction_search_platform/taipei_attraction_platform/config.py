@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 
 TAIPEI_CITY_NAMES = {"臺北市", "台北市", "Taipei", "Taipei City"}
@@ -21,6 +22,27 @@ TAIPEI_BBOX = {
 }
 
 
+def load_root_env() -> None:
+    env_path = Path(__file__).resolve().parents[3] / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def env_first(*names: str) -> str | None:
+    load_root_env()
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return None
+
+
 @dataclass(frozen=True)
 class ApiKeys:
     tdx_client_id: str | None = None
@@ -32,11 +54,11 @@ class ApiKeys:
     @classmethod
     def from_env(cls) -> "ApiKeys":
         return cls(
-            tdx_client_id=os.getenv("TDX_CLIENT_ID") or None,
-            tdx_client_secret=os.getenv("TDX_CLIENT_SECRET") or None,
-            opentripmap_api_key=os.getenv("OPENTRIPMAP_API_KEY") or None,
-            geoapify_api_key=os.getenv("GEOAPIFY_API_KEY") or None,
-            foursquare_api_key=os.getenv("FOURSQUARE_API_KEY") or None,
+            tdx_client_id=env_first("TDX_TOURISM_CLIENT_ID", "TDX_CLIENT_ID"),
+            tdx_client_secret=env_first("TDX_TOURISM_CLIENT_SECRET", "TDX_CLIENT_SECRET"),
+            opentripmap_api_key=env_first("OPENTRIPMAP_API_KEY"),
+            geoapify_api_key=env_first("GEOAPIFY_API_KEY"),
+            foursquare_api_key=env_first("FOURSQUARE_API_KEY"),
         )
 
 

@@ -26,8 +26,8 @@ spec.loader.exec_module(tdx_module)
 BASE_URL = tdx_module.BASE_URL
 OPERATOR = tdx_module.OPERATOR
 
-client_id = os.getenv("TDX_CLIENT_ID", tdx_module.client_id)
-client_secret = os.getenv("TDX_CLIENT_SECRET", tdx_module.client_secret)
+client_id = os.getenv("TDX_MRT_CLIENT_ID") or os.getenv("TDX_CLIENT_ID") or tdx_module.client_id
+client_secret = os.getenv("TDX_MRT_CLIENT_SECRET") or os.getenv("TDX_CLIENT_SECRET") or tdx_module.client_secret
 
 
 class CachedTDX(tdx_module.TDX):
