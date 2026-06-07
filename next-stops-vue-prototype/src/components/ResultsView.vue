@@ -1,5 +1,6 @@
 <script setup>
 import IconGlyph from "./IconGlyph.vue";
+import TransportIcon from "./TransportIcon.vue";
 import { LOCATION_FALLBACK_LABEL, MOODS } from "../constants";
 import { aqiChip, budgetLabel, commuteParts, suitabilityLabel, weatherChips } from "../utils/formatters";
 
@@ -16,8 +17,10 @@ const emit = defineEmits(["navigate", "view", "toggle-save", "find", "feedback"]
 const FEEDBACK_OPTIONS = [
   { type: "good_fit", label: "Good fit" },
   { type: "too_far", label: "Too far" },
+  { type: "too_expensive", label: "Too expensive" },
   { type: "not_my_vibe", label: "Not my vibe" },
   { type: "prefer_indoor", label: "More indoor" },
+  { type: "prefer_scenic", label: "More scenic" },
 ];
 
 function commuteInfo(place) {
@@ -92,7 +95,7 @@ function placeAqiChip(place) {
             <strong>{{ suitabilityLabel(place) }}</strong>
           </span>
           <span class="badge-chip commute-badge">
-            <IconGlyph :name="commuteInfo(place).icon" />
+            <TransportIcon :name="commuteInfo(place).icon" :label="commuteInfo(place).mode" />
             <strong>{{ commuteInfo(place).duration }}</strong>
           </span>
           <span

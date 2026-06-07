@@ -19,7 +19,7 @@ async function fetchJson(base, path, options = {}) {
 }
 
 export async function getRecommendations(criteria) {
-  const data = await fetchJson(DATA_API_BASE, "/api/recommendations", {
+  const data = await fetchJson(DATA_API_BASE, "/api/recommend", {
     method: "POST",
     body: JSON.stringify({
       criteria,
@@ -33,7 +33,29 @@ export async function getRecommendations(criteria) {
   return { ...data, count: results.length, results };
 }
 
-export async function getPlace(id) {
+export async function getPlace(id, criteria = {}) {
+  try {
+    const query = new URLSearchParams({
+      session_id: getSessionId(),
+      mood: criteria.mood || "relaxing_walk",
+      distance: String(criteria.distance || 30),
+      time: String(criteria.time || 120),
+      budget: criteria.budget || "medium",
+      weatherPreference: criteria.weatherPreference || "any",
+    });
+    if (criteria.lat !== null && criteria.lat !== undefined && criteria.lon !== null && criteria.lon !== undefined) {
+      query.set("lat", String(criteria.lat));
+      query.set("lon", String(criteria.lon));
+    }
+    if (Array.isArray(criteria.transportModes) && criteria.transportModes.length) {
+      query.set("transportModes", criteria.transportModes.join(","));
+    }
+    const place = normalizeRecommendationResult(await fetchJson(DATA_API_BASE, `/api/places/${encodeURIComponent(id)}?${query.toString()}`));
+    rememberPlaces([place]);
+    return place;
+  } catch {
+    // Fall through to local cache/search so the prototype remains usable when the API is offline.
+  }
   const cached = placeCache.find((place) => place.id === id) || loadJson(SAVED_KEY, []).find((place) => place.id === id);
   if (cached) return cached;
   const data = await searchPlaces({ limit: 100 });
@@ -135,18 +157,23 @@ export async function getMapboxConfig() {
   return fetchJson(DATA_API_BASE, "/api/mapbox-config");
 }
 
-export async function getRoute(origin, destination) {
+export async function getRoute(origin, destination, transportModes = []) {
   return fetchJson(DATA_API_BASE, "/api/route", {
     method: "POST",
-    body: JSON.stringify({ origin, destination }),
+    body: JSON.stringify({ origin, destination, transportModes }),
   });
 }
 
 export function googleDirectionsUrl(origin, destination, mode = "TRANSIT") {
   const travelmode = {
     TRANSIT: "transit",
+    BUS: "transit",
+    MRT: "transit",
     WALKING: "walking",
     DRIVING: "driving",
+    CAR: "driving",
+    MOTORCYCLE: "driving",
+    BICYCLE: "bicycling",
   }[mode] || "transit";
   const params = new URLSearchParams({
     api: "1",

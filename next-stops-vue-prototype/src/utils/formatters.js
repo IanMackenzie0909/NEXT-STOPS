@@ -19,6 +19,8 @@ export function commuteParts(commute, fallbackMinutes = 0) {
 export function transportIcon(mode, label = "") {
   const text = `${mode || ""} ${label || ""}`.toLowerCase();
   if (/walk|步行|走路/.test(text)) return "walk";
+  if (/bicycle|bike|腳踏車|自行車/.test(text)) return "bicycle";
+  if (/motor|scooter|機車/.test(text)) return "scooter";
   if (/driv|開車|自駕|car/.test(text)) return "car";
   if (/bus|公車/.test(text)) return "bus";
   if (/mrt|metro|捷運|rail|train|火車|大眾/.test(text)) return "train";

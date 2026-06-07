@@ -76,6 +76,14 @@ input {
   stroke-width: 2;
 }
 
+.transport-icon-img {
+  display: block;
+  width: 1.18em;
+  height: 1.18em;
+  flex: 0 0 auto;
+  object-fit: contain;
+}
+
 h1,
 h2,
 p {
@@ -724,11 +732,22 @@ h2 {
   stroke-width: 2.35;
 }
 
+.commute-badge .transport-icon-img {
+  width: 20px;
+  height: 20px;
+}
+
 .commute-chip .icon-glyph,
 .commute-inline .icon-glyph {
   width: 20px;
   height: 20px;
   stroke-width: 2.35;
+}
+
+.commute-chip .transport-icon-img,
+.commute-inline .transport-icon-img {
+  width: 22px;
+  height: 22px;
 }
 
 .suitability-chip {
@@ -835,6 +854,71 @@ input[type="range"]::-webkit-slider-thumb {
   border-radius: 50%;
   background: var(--indigo);
   box-shadow: 0 4px 12px rgba(99, 102, 241, 0.35);
+}
+
+.transport-field {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.field-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.field-title span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.field-title small {
+  color: #8d98a8;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-align: right;
+}
+
+.transport-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.transport-chip {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--muted);
+  padding: 0 10px;
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.transport-chip .icon-glyph {
+  width: 18px;
+  height: 18px;
+  stroke-width: 2.25;
+}
+
+.transport-chip .transport-icon-img {
+  width: 22px;
+  height: 22px;
+}
+
+.transport-chip.selected {
+  border-color: rgba(99, 102, 241, 0.22);
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.13), rgba(95, 146, 120, 0.12));
+  color: var(--indigo);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86);
 }
 
 .select-grid {
@@ -1208,6 +1292,11 @@ textarea {
   color: var(--indigo);
 }
 
+.commute-inline .transport-icon-img {
+  width: 24px;
+  height: 24px;
+}
+
 .route-marker {
   display: grid;
   place-items: center;
@@ -1545,6 +1634,15 @@ textarea {
 .reason-list span {
   color: var(--muted);
   line-height: 1.45;
+}
+
+.route-subhint {
+  display: block;
+  margin-top: 4px;
+  color: #8d98a8;
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1.35;
 }
 
 .backup-list {
@@ -2041,6 +2139,7 @@ textarea {
   .back-button:hover,
   .ambient-toggle:hover,
   .calm-select-trigger:hover,
+  .transport-chip:hover,
   .feedback-chip:hover,
   .backup-item:hover {
     box-shadow: 0 14px 32px rgba(15, 23, 42, 0.1);
@@ -2251,6 +2350,10 @@ input:focus-visible {
 
   .select-grid {
     grid-template-columns: 1fr;
+  }
+
+  .transport-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .detail-screen {

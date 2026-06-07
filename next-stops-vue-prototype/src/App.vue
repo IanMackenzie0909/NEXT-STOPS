@@ -22,6 +22,7 @@ const criteria = reactive({
   lon: null,
   weatherPreference: "any",
   budget: "medium",
+  transportModes: [],
 });
 
 const route = ref(window.location.hash.replace(/^#/, "") || "/");

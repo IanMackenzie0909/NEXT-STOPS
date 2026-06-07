@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { getContext, getMapboxConfig, getPlace, getRoute, googleDirectionsUrl } from "../api/nextStopsApi";
 import IconGlyph from "./IconGlyph.vue";
+import TransportIcon from "./TransportIcon.vue";
 import { LOCATION_FALLBACK_LABEL } from "../constants";
 import { aqiChip, budgetLabel, commuteParts, openingLabel, weatherChips } from "../utils/formatters";
 
@@ -23,6 +24,15 @@ const descriptionExpanded = ref(false);
 const travelTime = computed(() => place.value?.matched_travel_time ?? place.value?.travel_time_minutes ?? 0);
 const commute = computed(() => routeData.value?.best || place.value?.commute || null);
 const commuteInfo = computed(() => commuteParts(commute.value, travelTime.value));
+const transitSummary = computed(() => {
+  const transit = commute.value?.transit;
+  if (!transit) return "";
+  const parts = [];
+  if (transit.board_count) parts.push(`${transit.board_count} 段搭乘`);
+  if (transit.transfer_count) parts.push(`${transit.transfer_count} 次轉乘`);
+  if (transit.walking_duration_text) parts.push(`步行約 ${transit.walking_duration_text}`);
+  return parts.join(" / ");
+});
 const detailWeatherChips = computed(() => weatherChips(context.value, place.value?.weather_summary));
 const detailAqiChip = computed(() => aqiChip(context.value, place.value?.aqi_value, place.value?.aqi_status));
 const backupOptions = computed(() => Array.isArray(place.value?.backup_options) ? place.value.backup_options.filter(Boolean).slice(0, 3) : []);
@@ -151,7 +161,7 @@ async function loadRouteMap() {
   }
 
   try {
-    routeData.value = await getRoute(origin.value, destination.value);
+    routeData.value = await getRoute(origin.value, destination.value, props.criteria.transportModes || []);
   } catch (error) {
     mapStatus.value = `路線資料無法取得：${error.message}`;
     return;
@@ -202,7 +212,7 @@ async function loadRouteMap() {
 async function loadPlace() {
   loading.value = true;
   try {
-    place.value = await getPlace(props.placeId);
+    place.value = await getPlace(props.placeId, props.criteria);
     if (destination.value) context.value = await getContext(destination.value.lat, destination.value.lon).catch(() => null);
     await loadRouteMap();
   } catch (error) {
@@ -242,7 +252,7 @@ watch(() => props.placeId, () => {
         <div ref="mapContainer" class="mapbox-route" role="img" :aria-label="`${place.name} 路線地圖`"></div>
         <div class="map-route-status">
           <span class="commute-inline">
-            <IconGlyph :name="commuteInfo.icon" />
+            <TransportIcon :name="commuteInfo.icon" :label="commuteInfo.mode" />
             <strong>{{ commuteInfo.duration }}</strong>
           </span>
           <small>{{ mapStatus }}</small>
@@ -264,7 +274,7 @@ watch(() => props.placeId, () => {
           </button>
           <div class="detail-info-grid">
             <span class="info-chip commute-chip">
-              <IconGlyph :name="commuteInfo.icon" />
+              <TransportIcon :name="commuteInfo.icon" :label="commuteInfo.mode" />
               <strong>{{ commuteInfo.duration }}</strong>
               <small>通勤時間</small>
             </span>
@@ -291,7 +301,11 @@ watch(() => props.placeId, () => {
 
         <section class="reason-list">
           <div><strong>Why now</strong><span>{{ place.reason }}</span></div>
-          <div><strong>Route</strong><span>{{ place.route_hint }}</span></div>
+          <div>
+            <strong>Route</strong>
+            <span>{{ place.route_hint }}</span>
+            <small v-if="transitSummary" class="route-subhint">{{ transitSummary }}</small>
+          </div>
           <div><strong>Start</strong><span>{{ criteria.locationLabel || LOCATION_FALLBACK_LABEL }}</span></div>
         </section>
 

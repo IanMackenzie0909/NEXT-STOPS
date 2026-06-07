@@ -35,6 +35,27 @@ defineProps({
       <circle cx="7" cy="17" r="1"></circle>
       <circle cx="17" cy="17" r="1"></circle>
     </g>
+    <g v-else-if="name === 'scooter'">
+      <path d="M8 8h8"></path>
+      <path d="M9 8l-2 5v4"></path>
+      <path d="M15 8l2 5v4"></path>
+      <path d="M8 13h8"></path>
+      <path d="M10 17h4"></path>
+      <path d="M12 5v3"></path>
+      <circle cx="9" cy="18" r="1.5"></circle>
+      <circle cx="15" cy="18" r="1.5"></circle>
+      <path d="M10 11h4"></path>
+    </g>
+    <g v-else-if="name === 'bicycle'">
+      <circle cx="6" cy="17" r="3"></circle>
+      <circle cx="18" cy="17" r="3"></circle>
+      <path d="M6 17l4-8h4l4 8"></path>
+      <path d="M10 9l3 8"></path>
+      <path d="M10 13h6"></path>
+      <path d="M13 9l2-3"></path>
+      <path d="M14 6h3"></path>
+      <path d="M9 7h3"></path>
+    </g>
     <g v-else-if="name === 'sun'">
       <circle cx="12" cy="12" r="4"></circle>
       <path d="M12 2v2"></path>

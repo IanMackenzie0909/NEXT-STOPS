@@ -2,7 +2,8 @@
 import { computed, ref } from "vue";
 import AppIcon from "./AppIcon.vue";
 import IconGlyph from "./IconGlyph.vue";
-import { BUDGET_LABELS, LOCATION_FALLBACK_LABEL, MOODS, WEATHER_LABELS } from "../constants";
+import TransportIcon from "./TransportIcon.vue";
+import { BUDGET_LABELS, LOCATION_FALLBACK_LABEL, MOODS, TRANSPORT_MODES, WEATHER_LABELS } from "../constants";
 import { formatTime } from "../utils/formatters";
 
 const props = defineProps({
@@ -36,6 +37,15 @@ function patch(updates) {
 function chooseSelect(updates) {
   patch(updates);
   openSelect.value = "";
+}
+
+function toggleTransport(modeId) {
+  const current = Array.isArray(props.criteria.transportModes) ? props.criteria.transportModes : [];
+  patch({
+    transportModes: current.includes(modeId)
+      ? current.filter((item) => item !== modeId)
+      : [...current, modeId],
+  });
 }
 </script>
 
@@ -83,6 +93,26 @@ function chooseSelect(updates) {
         <span>最多移動 <strong>{{ criteria.distance }} 分鐘</strong></span>
         <input type="range" min="10" max="90" step="5" :value="criteria.distance" @input="patch({ distance: Number($event.target.value) })" />
       </label>
+
+      <div class="transport-field">
+        <div class="field-title">
+          <span>交通方式</span>
+          <small>{{ criteria.transportModes?.length ? "依已選方式比較" : "未選時自動比較最短時間" }}</small>
+        </div>
+        <div class="transport-grid">
+          <button
+            v-for="mode in TRANSPORT_MODES"
+            :key="mode.id"
+            class="transport-chip"
+            :class="{ selected: criteria.transportModes?.includes(mode.id) }"
+            type="button"
+            @click="toggleTransport(mode.id)"
+          >
+            <TransportIcon :name="mode.icon" />
+            <span>{{ mode.label }}</span>
+          </button>
+        </div>
+      </div>
 
       <div class="location-field">
         <div>

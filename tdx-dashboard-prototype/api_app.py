@@ -37,10 +37,11 @@ RECOMMENDATION_DB = Path(os.getenv("NEXT_STOPS_DB_PATH", ROOT / "data" / "next_s
 GOOGLE_DIRECTIONS_URL = "https://maps.googleapis.com/maps/api/directions/json"
 GOOGLE_GEOCODING_URL = "https://maps.googleapis.com/maps/api/geocode/json"
 GOOGLE_PLACE_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
+GOOGLE_FIND_PLACE_URL = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"
 DEFAULT_MAPBOX_TOKEN = "your_mapbox_access_token"
 MAX_STATION_RESULTS = 300
 TDX_REQUEST_RETRIES = 2
-ROUTE_COMPARE_MODES = ("TRANSIT", "WALKING", "DRIVING")
+ROUTE_COMPARE_MODES = ("CAR", "BUS", "MRT", "MOTORCYCLE", "WALKING", "BICYCLE")
 
 SAMPLE_LOCATIONS = [
     {"name": "臺北車站", "lat": 25.0478, "lon": 121.5170},
@@ -101,8 +102,37 @@ CATEGORY_LABELS = {
 
 COMMUTE_MODE_LABELS = {
     "TRANSIT": "大眾運輸",
+    "CAR": "開車",
+    "BUS": "公車",
+    "MRT": "捷運",
+    "MOTORCYCLE": "機車",
+    "BICYCLE": "腳踏車",
     "WALKING": "步行",
     "DRIVING": "開車",
+}
+
+FRONTEND_TRANSPORT_TO_BACKEND = {
+    "car": "CAR",
+    "bus": "BUS",
+    "mrt": "MRT",
+    "motorcycle": "MOTORCYCLE",
+    "scooter": "MOTORCYCLE",
+    "walking": "WALKING",
+    "walk": "WALKING",
+    "bicycle": "BICYCLE",
+    "bike": "BICYCLE",
+}
+
+OPENING_UNKNOWN_ALLOWED_CATEGORIES = {"park", "riverside", "viewpoint"}
+
+FEEDBACK_WEIGHT_RULES = {
+    "too_far": {"distance": 0.16},
+    "too_expensive": {"budget": 0.16},
+    "prefer_indoor": {"weather": 0.14, "environment": 0.12},
+    "prefer_quieter": {"mood": 0.08, "quality": 0.06},
+    "prefer_scenic": {"mood": 0.08, "quality": 0.06},
+    "good_fit": {"mood": 0.05, "quality": 0.05},
+    "not_my_vibe": {"mood": 0.08},
 }
 
 
@@ -220,6 +250,7 @@ weather_aqi_client = weather_aqi_module.WeatherAQIClient()
 bus_station_cache: dict[str, dict[str, Any]] = {}
 mrt_stations_cache: dict[str, Any] = {"items": [], "fetched_at": None}
 google_place_status_cache: dict[str, dict[str, Any]] = {}
+google_place_lookup_cache: dict[str, str] = {}
 attraction_service_cache: dict[str, Any] = {"service": None, "loaded_at": None}
 
 
@@ -243,6 +274,8 @@ def ensure_list_response(data: Any, label: str) -> list:
 
 
 def api_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, HTTPException):
+        return exc
     for module in (bus_module, mrt_module):
         if isinstance(exc, module.TDXRateLimitError):
             return HTTPException(status_code=429, detail=str(exc))
@@ -347,22 +380,75 @@ def format_distance(meters: int | float | None) -> str:
     return f"{round(meters)} 公尺"
 
 
+def google_route_params(mode: str) -> dict[str, str]:
+    mapping = {
+        "CAR": {"mode": "driving"},
+        "DRIVING": {"mode": "driving"},
+        "WALKING": {"mode": "walking"},
+        "BICYCLE": {"mode": "bicycling"},
+        "MOTORCYCLE": {"mode": "two_wheeler"},
+        "BUS": {"mode": "transit", "transit_mode": "bus"},
+        "MRT": {"mode": "transit", "transit_mode": "subway|train"},
+        "TRANSIT": {"mode": "transit"},
+    }
+    return mapping.get(mode, {"mode": "transit"})
+
+
+def transit_step_summary(leg: dict[str, Any]) -> dict[str, Any]:
+    steps = []
+    walking_seconds = 0
+    transfers = 0
+    lines = []
+    for step in leg.get("steps") or []:
+        travel_mode = step.get("travel_mode")
+        duration_seconds = step.get("duration", {}).get("value")
+        if travel_mode == "WALKING":
+            walking_seconds += int(duration_seconds or 0)
+            steps.append({
+                "type": "walk",
+                "duration_text": step.get("duration", {}).get("text", ""),
+                "distance_text": step.get("distance", {}).get("text", ""),
+                "instruction": re.sub(r"<[^>]+>", "", step.get("html_instructions") or ""),
+            })
+            continue
+        if travel_mode == "TRANSIT":
+            details = step.get("transit_details") or {}
+            line = details.get("line") or {}
+            vehicle = line.get("vehicle") or {}
+            line_name = line.get("short_name") or line.get("name") or vehicle.get("name") or "大眾運輸"
+            lines.append(str(line_name))
+            transfers += 1
+            steps.append({
+                "type": "transit",
+                "line": line_name,
+                "vehicle": vehicle.get("name") or "",
+                "departure_stop": (details.get("departure_stop") or {}).get("name", ""),
+                "arrival_stop": (details.get("arrival_stop") or {}).get("name", ""),
+                "num_stops": details.get("num_stops"),
+                "duration_text": step.get("duration", {}).get("text", ""),
+            })
+    return {
+        "walking_duration_seconds": walking_seconds,
+        "walking_duration_text": format_duration(walking_seconds) if walking_seconds else "",
+        "transfer_count": max(0, transfers - 1),
+        "board_count": transfers,
+        "lines": lines,
+        "steps": steps,
+    }
+
+
 def google_directions(origin: dict[str, Any], destination: dict[str, Any], mode: str, include_geometry: bool = False) -> dict[str, Any]:
     key = get_google_maps_key()
     if not key:
         raise RuntimeError("Google Maps API key is not configured")
 
-    google_mode = {
-        "TRANSIT": "transit",
-        "WALKING": "walking",
-        "DRIVING": "driving",
-    }.get(mode, "transit")
+    route_params = google_route_params(mode)
     response = requests.get(
         GOOGLE_DIRECTIONS_URL,
         params={
             "origin": f"{origin['lat']},{origin['lon']}",
             "destination": f"{destination['lat']},{destination['lon']}",
-            "mode": google_mode,
+            **route_params,
             "region": "tw",
             "language": "zh-TW",
             "key": key,
@@ -397,6 +483,13 @@ def google_directions(origin: dict[str, Any], destination: dict[str, Any], mode:
             "address": leg.get("end_address", ""),
         },
     }
+    if route_params.get("mode") == "transit":
+        transit = transit_step_summary(leg)
+        result["transit"] = transit
+        result["transfer_count"] = transit["transfer_count"]
+        result["walking_duration_text"] = transit["walking_duration_text"]
+        if transit["lines"]:
+            result["summary"] = " / ".join(transit["lines"][:3])
     if include_geometry:
         result["geometry"] = {
             "type": "LineString",
@@ -437,6 +530,74 @@ def google_geocode(query: str) -> dict[str, Any] | None:
     }
 
 
+def google_find_place_id(query: str) -> str:
+    normalized_query = " ".join(str(query or "").split())
+    if not normalized_query:
+        return ""
+    if normalized_query in google_place_lookup_cache:
+        return google_place_lookup_cache[normalized_query]
+
+    key = get_google_maps_key()
+    if not key:
+        return ""
+    try:
+        response = requests.get(
+            GOOGLE_FIND_PLACE_URL,
+            params={
+                "input": normalized_query,
+                "inputtype": "textquery",
+                "fields": "place_id,name,formatted_address,business_status",
+                "language": "zh-TW",
+                "locationbias": "circle:35000@25.0478,121.5170",
+                "key": key,
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return ""
+
+    candidates = payload.get("candidates") or []
+    place_id = str(candidates[0].get("place_id") or "").strip() if candidates else ""
+    google_place_lookup_cache[normalized_query] = place_id
+    return place_id
+
+
+def raw_google_place_id(raw: dict[str, Any]) -> str:
+    direct = str(raw.get("geocoded_place_id") or raw.get("place_id") or "").strip()
+    if direct:
+        return direct
+    source_ids = raw.get("source_ids") if isinstance(raw.get("source_ids"), dict) else {}
+    for key in ("google_places", "google", "place_id"):
+        value = str(source_ids.get(key) or "").strip()
+        if value:
+            return value
+    base_query = " ".join(
+        str(part)
+        for part in [
+            raw.get("name"),
+            raw.get("address"),
+            raw.get("district"),
+            "臺北市",
+        ]
+        if part
+    )
+    name = str(raw.get("name") or "")
+    description = str(raw.get("description") or "")
+    query_variants = []
+    if re.search(r"台北\s*101|臺北\s*101|taipei\s*101", name, re.IGNORECASE):
+        if re.search(r"觀景|觀景台|89", description):
+            query_variants.append("台北101 觀景台")
+        query_variants.extend(["台北101 購物中心", "台北101"])
+    query_variants.append(base_query)
+    for query in query_variants:
+        place_id = google_find_place_id(query)
+        if place_id:
+            return place_id
+    return ""
+
+
 def google_place_open_status(place_id: str | None) -> dict[str, Any]:
     place_id = str(place_id or "").strip()
     if not place_id:
@@ -453,7 +614,7 @@ def google_place_open_status(place_id: str | None) -> dict[str, Any]:
             GOOGLE_PLACE_DETAILS_URL,
             params={
                 "place_id": place_id,
-                "fields": "business_status,opening_hours,name",
+                "fields": "business_status,opening_hours,name,formatted_address,geometry",
                 "language": "zh-TW",
                 "region": "tw",
                 "key": key,
@@ -475,8 +636,17 @@ def google_place_open_status(place_id: str | None) -> dict[str, Any]:
 
     result = payload.get("result") or {}
     business_status = result.get("business_status") or ""
+    location = result.get("geometry", {}).get("location", {})
+    detail_base = {
+        "place_id": place_id,
+        "google_name": result.get("name") or "",
+        "google_address": result.get("formatted_address") or "",
+        "google_lat": to_float(location.get("lat")),
+        "google_lon": to_float(location.get("lng")),
+    }
     if business_status in {"CLOSED_TEMPORARILY", "CLOSED_PERMANENTLY"}:
         status = {
+            **detail_base,
             "open_now": False,
             "status": "closed",
             "source": "google_places",
@@ -485,6 +655,7 @@ def google_place_open_status(place_id: str | None) -> dict[str, Any]:
     else:
         open_now = result.get("opening_hours", {}).get("open_now")
         status = {
+            **detail_base,
             "open_now": open_now if isinstance(open_now, bool) else None,
             "status": "open" if open_now is True else "closed" if open_now is False else "unknown",
             "source": "google_places",
@@ -508,7 +679,11 @@ def raw_open_status(raw: dict[str, Any]) -> dict[str, Any]:
     if opening_hours and re.search(r"24\s*小時|24\s*hours|24/7|全天", opening_hours, re.IGNORECASE):
         return {"open_now": True, "status": "open", "source": "opening_hours", "detail": opening_hours}
 
-    return google_place_open_status(raw.get("geocoded_place_id") or raw.get("place_id"))
+    place_id = raw_google_place_id(raw)
+    status = google_place_open_status(place_id)
+    if place_id:
+        status = {**status, "place_id": place_id}
+    return status
 
 
 def fallback_commute(origin: dict[str, Any], destination: dict[str, Any], mode: str, include_geometry: bool = False) -> dict[str, Any]:
@@ -517,11 +692,21 @@ def fallback_commute(origin: dict[str, Any], destination: dict[str, Any], mode: 
         "WALKING": 1.25,
         "TRANSIT": 5.8,
         "DRIVING": 7.5,
+        "CAR": 7.5,
+        "BUS": 5.2,
+        "MRT": 6.4,
+        "MOTORCYCLE": 8.5,
+        "BICYCLE": 3.8,
     }.get(mode, 5.8)
     overhead_seconds = {
         "WALKING": 0,
         "TRANSIT": 420,
         "DRIVING": 300,
+        "CAR": 300,
+        "BUS": 540,
+        "MRT": 660,
+        "MOTORCYCLE": 240,
+        "BICYCLE": 120,
     }.get(mode, 300)
     seconds = max(60, round(distance / speed_mps + overhead_seconds))
     result = {
@@ -536,6 +721,17 @@ def fallback_commute(origin: dict[str, Any], destination: dict[str, Any], mode: 
         "origin": {"lat": origin.get("lat"), "lon": origin.get("lon")},
         "destination": {"lat": destination.get("lat"), "lon": destination.get("lon")},
     }
+    if mode in {"BUS", "MRT", "TRANSIT"}:
+        result["transit"] = {
+            "walking_duration_seconds": min(round(seconds * 0.28), 900),
+            "walking_duration_text": format_duration(min(round(seconds * 0.28), 900)),
+            "transfer_count": 0,
+            "board_count": 1,
+            "lines": [],
+            "steps": [],
+        }
+        result["walking_duration_text"] = result["transit"]["walking_duration_text"]
+        result["transfer_count"] = 0
     if include_geometry:
         result["geometry"] = {
             "type": "LineString",
@@ -545,6 +741,24 @@ def fallback_commute(origin: dict[str, Any], destination: dict[str, Any], mode: 
             ],
         }
     return result
+
+
+def normalize_transport_modes(value: Any) -> tuple[str, ...]:
+    if value in (None, "", []):
+        return ROUTE_COMPARE_MODES
+    raw_items = value
+    if isinstance(value, str):
+        raw_items = [item.strip() for item in value.split(",")]
+    if not isinstance(raw_items, (list, tuple, set)):
+        return ROUTE_COMPARE_MODES
+    modes = []
+    for item in raw_items:
+        key = str(item or "").strip()
+        upper = key.upper()
+        mode = FRONTEND_TRANSPORT_TO_BACKEND.get(key.lower(), upper)
+        if mode in ROUTE_COMPARE_MODES and mode not in modes:
+            modes.append(mode)
+    return tuple(modes) if modes else ROUTE_COMPARE_MODES
 
 
 def compare_commute_options(
@@ -628,6 +842,159 @@ def search_attraction_places(
     )
 
 
+def get_attraction_place_by_id(place_id: str) -> dict[str, Any] | None:
+    normalized_id = str(place_id or "").strip()
+    if not normalized_id:
+        return None
+    service = get_attraction_service()
+    for place in service.index.places:
+        if str(place.id) == normalized_id:
+            return place.to_dict()
+    return None
+
+
+def detail_criteria_from_query(
+    lat: float | None = None,
+    lon: float | None = None,
+    mood: str = "relaxing_walk",
+    distance: int = 30,
+    time_minutes: int = 120,
+    budget: str = "medium",
+    weather_preference: str = "any",
+    transport_modes: str | None = None,
+) -> dict[str, Any]:
+    criteria = {
+        "mood": mood or "relaxing_walk",
+        "distance": distance or 30,
+        "time": time_minutes or 120,
+        "budget": budget or "medium",
+        "weatherPreference": weather_preference or "any",
+        "transportModes": list(normalize_transport_modes(transport_modes)),
+        "location": "taipei_main",
+        "locationLabel": LOCATION_HINTS["taipei_main"]["label"],
+    }
+    if lat is not None and lon is not None:
+        criteria.update({
+            "location": "current",
+            "locationLabel": "目前定位",
+            "lat": lat,
+            "lon": lon,
+        })
+    return criteria
+
+
+def build_nearby_backups(
+    display_place: dict[str, Any],
+    criteria: dict[str, Any],
+    context: dict[str, Any],
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    lat = to_float(display_place.get("lat"))
+    lon = to_float(display_place.get("lon") if display_place.get("lon") is not None else display_place.get("lng"))
+    if lat is None or lon is None:
+        return []
+
+    indoor_only = bool(user_context_from_criteria(criteria, context).indoor_only)
+    results: list[dict[str, Any]] = []
+    seen = {str(display_place.get("id"))}
+    for raw in search_attraction_places(lat=lat, lon=lon, radius_m=1400, limit=max(18, limit * 7)):
+        raw_id = str(raw.get("id") or "")
+        if not raw_id or raw_id in seen:
+            continue
+        seen.add(raw_id)
+        categories = [str(item) for item in raw.get("categories") or [] if item]
+        text = " ".join([
+            str(raw.get("name") or ""),
+            str(raw.get("description") or ""),
+            str(raw.get("district") or ""),
+            " ".join(categories),
+        ])
+        category = primary_category(categories, text)
+        indoor, _outdoor = place_environment(category, categories, text)
+        if indoor_only and not indoor:
+            continue
+        open_status = raw_open_status(raw)
+        if open_status.get("open_now") is False:
+            continue
+        raw_lat = to_float(raw.get("lat"))
+        raw_lon = to_float(raw.get("lon") if raw.get("lon") is not None else raw.get("lng"))
+        if raw_lat is None or raw_lon is None:
+            continue
+        backup = {
+            "id": raw_id,
+            "name": raw.get("name") or raw_id,
+            "category": display_category(category),
+            "address": raw.get("address") or f"{raw.get('district') or '臺北市'} / 臺北市",
+            "lat": raw_lat,
+            "lon": raw_lon,
+            "lng": raw_lon,
+            "distance_from_place_m": round(haversine_m(lat, lon, raw_lat, raw_lon) or 0),
+            "open_now": open_status.get("open_now"),
+            "opening_status": open_status.get("status"),
+        }
+        results.append(backup)
+        if len(results) >= limit:
+            break
+    return [
+        {
+            "id": item["id"],
+            "name": item["name"],
+            "category": item["category"],
+            "address": item.get("address"),
+            "lat": item.get("lat"),
+            "lon": item.get("lon"),
+            "lng": item.get("lng"),
+            "distance_m": item.get("distance_from_place_m"),
+            "open_now": item.get("open_now"),
+            "opening_status": item.get("opening_status"),
+        }
+        for item in results
+    ]
+
+
+def build_place_detail(
+    place_id: str,
+    criteria: dict[str, Any],
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    raw = get_attraction_place_by_id(place_id)
+    if raw is None:
+        raise HTTPException(status_code=404, detail="Place not found")
+    signals = build_session_preference_signals(session_id)
+    criteria = criteria_with_preference_signals(criteria, signals)
+    context = recommendation_context(criteria)
+    normalized = normalize_place_payload(raw, criteria, context)
+    apply_preference_signals_to_candidates([normalized], signals)
+    user = user_context_from_criteria(criteria, context)
+    recommendations, _filtered_reasons = recommendation_algorithm.recommend(
+        [normalized["algorithm_place"]],
+        user,
+        k=1,
+    )
+    if recommendations:
+        display = format_recommendation_result(recommendations[0], normalized["display"], criteria, context)
+    else:
+        display = {
+            **normalized["display"],
+            "score": 0,
+            "reason": (
+                f"{normalized['display']['name']} 已載入詳細資料，但依目前條件可能不適合直接安排；"
+                "請確認營業狀態、天氣與通勤時間後再決定。"
+            ),
+            "algorithm_reason": "Filtered by the current recommendation constraints.",
+            "algorithm": {"fallback": True, "score": 0, "active_factors": []},
+            "context": {
+                "weather": context.get("weather", {}),
+                "air_quality": context.get("air_quality", {}),
+                "uv": context.get("uv", {}),
+                "outdoor_comfort": context.get("outdoor_comfort"),
+            },
+        }
+    display["backup_options"] = build_nearby_backups(display, criteria, context)
+    display["preference_signals"] = signals
+    return display
+
+
 def init_recommendation_db() -> None:
     RECOMMENDATION_DB.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(RECOMMENDATION_DB) as db:
@@ -695,6 +1062,15 @@ def init_recommendation_db() -> None:
             """
         )
         db.execute("CREATE INDEX IF NOT EXISTS idx_feedback_session ON recommendation_feedback(session_id)")
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_preference_signals (
+                session_id TEXT PRIMARY KEY,
+                signals_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
 
 
 def record_recommendation(
@@ -845,6 +1221,7 @@ def upsert_saved_place(payload: dict[str, Any]) -> dict[str, Any]:
             "SELECT * FROM saved_places WHERE session_id = ? AND place_id = ?",
             (session_id, place_id),
         ).fetchone()
+    build_session_preference_signals(session_id)
     return saved_place_from_row(row)
 
 
@@ -870,6 +1247,7 @@ def remove_saved_place(session_id: str, place_id: str) -> dict[str, Any]:
             "DELETE FROM saved_places WHERE session_id = ? AND place_id = ?",
             (session_id, place_id),
         )
+    build_session_preference_signals(session_id)
     return {"ok": True, "deleted": cursor.rowcount}
 
 
@@ -901,7 +1279,121 @@ def record_feedback(payload: dict[str, Any]) -> dict[str, Any]:
                 now_iso(),
             ),
         )
-    return {"ok": True, "id": cursor.lastrowid}
+    signals = build_session_preference_signals(session_id)
+    return {"ok": True, "id": cursor.lastrowid, "signals": signals}
+
+
+def _safe_json_loads(value: str | None, fallback: Any) -> Any:
+    try:
+        return json.loads(value or "")
+    except Exception:
+        return fallback
+
+
+def _category_from_saved_row(row: sqlite3.Row) -> str:
+    payload = _safe_json_loads(row["place_json"], {})
+    return str(payload.get("algorithm_category") or payload.get("category") or row["category"] or "").strip()
+
+
+def build_session_preference_signals(session_id: str | None) -> dict[str, Any]:
+    session_id = str(session_id or "").strip()
+    base = {
+        "status": "cold_start",
+        "weight_adjustments": {},
+        "category_boosts": {},
+        "category_penalties": {},
+        "place_boosts": {},
+        "place_penalties": {},
+        "indoor_bias": 0.0,
+        "outdoor_penalty": 0.0,
+        "feedback_count": 0,
+        "saved_count": 0,
+    }
+    if not session_id:
+        return base
+
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        feedback_rows = db.execute(
+            """
+            SELECT place_id, feedback_type
+            FROM recommendation_feedback
+            WHERE session_id = ?
+            ORDER BY created_at DESC
+            LIMIT 160
+            """,
+            (session_id,),
+        ).fetchall()
+        saved_rows = db.execute(
+            """
+            SELECT place_id, category, place_json
+            FROM saved_places
+            WHERE session_id = ?
+            ORDER BY updated_at DESC
+            LIMIT 80
+            """,
+            (session_id,),
+        ).fetchall()
+
+    if not feedback_rows and not saved_rows:
+        return base
+
+    weights: dict[str, float] = {}
+    category_boosts: dict[str, float] = {}
+    category_penalties: dict[str, float] = {}
+    place_boosts: dict[str, float] = {}
+    place_penalties: dict[str, float] = {}
+    indoor_bias = 0.0
+    outdoor_penalty = 0.0
+
+    for row in saved_rows:
+        place_id = str(row["place_id"])
+        category = _category_from_saved_row(row)
+        place_boosts[place_id] = place_boosts.get(place_id, 0.0) + 0.08
+        if category:
+            category_boosts[category] = category_boosts.get(category, 0.0) + 0.06
+
+    for row in feedback_rows:
+        place_id = str(row["place_id"])
+        feedback_type = str(row["feedback_type"])
+        for factor, delta in FEEDBACK_WEIGHT_RULES.get(feedback_type, {}).items():
+            weights[factor] = weights.get(factor, 1.0) + delta
+        if feedback_type == "good_fit":
+            place_boosts[place_id] = place_boosts.get(place_id, 0.0) + 0.1
+        elif feedback_type == "not_my_vibe":
+            place_penalties[place_id] = place_penalties.get(place_id, 0.0) + 0.22
+        elif feedback_type == "too_far":
+            place_penalties[place_id] = place_penalties.get(place_id, 0.0) + 0.12
+        elif feedback_type == "prefer_indoor":
+            indoor_bias += 0.12
+            outdoor_penalty += 0.12
+
+    signals = {
+        **base,
+        "status": "learned",
+        "weight_adjustments": {key: round(min(value, 1.9), 4) for key, value in weights.items()},
+        "category_boosts": {key: round(min(value, 0.28), 4) for key, value in category_boosts.items()},
+        "category_penalties": {key: round(min(value, 0.28), 4) for key, value in category_penalties.items()},
+        "place_boosts": {key: round(min(value, 0.3), 4) for key, value in place_boosts.items()},
+        "place_penalties": {key: round(min(value, 0.42), 4) for key, value in place_penalties.items()},
+        "indoor_bias": round(min(indoor_bias, 0.4), 4),
+        "outdoor_penalty": round(min(outdoor_penalty, 0.4), 4),
+        "feedback_count": len(feedback_rows),
+        "saved_count": len(saved_rows),
+    }
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.execute(
+            """
+            INSERT INTO user_preference_signals (session_id, signals_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                signals_json = excluded.signals_json,
+                updated_at = excluded.updated_at
+            """,
+            (session_id, json.dumps(signals, ensure_ascii=False), now_iso()),
+        )
+    return signals
 
 
 def criteria_location(criteria: dict[str, Any]) -> dict[str, Any]:
@@ -979,18 +1471,71 @@ def user_context_from_criteria(criteria: dict[str, Any], context: dict[str, Any]
     )
 
 
+def criteria_with_preference_signals(criteria: dict[str, Any], signals: dict[str, Any]) -> dict[str, Any]:
+    adjusted = dict(criteria)
+    learned_weights = signals.get("weight_adjustments") or {}
+    explicit_weights = adjusted.get("weightAdjustments") or {}
+    merged_weights = dict(learned_weights)
+    merged_weights.update(explicit_weights)
+    if merged_weights:
+        adjusted["weightAdjustments"] = merged_weights
+    adjusted["learnedPreferenceSignals"] = signals
+    return adjusted
+
+
+def apply_preference_signals_to_candidates(candidates: list[dict[str, Any]], signals: dict[str, Any]) -> list[dict[str, Any]]:
+    if not candidates or signals.get("status") == "cold_start":
+        return candidates
+
+    category_boosts = signals.get("category_boosts") or {}
+    category_penalties = signals.get("category_penalties") or {}
+    place_boosts = signals.get("place_boosts") or {}
+    place_penalties = signals.get("place_penalties") or {}
+    indoor_bias = float(signals.get("indoor_bias") or 0)
+    outdoor_penalty = float(signals.get("outdoor_penalty") or 0)
+
+    for item in candidates:
+        place = item["algorithm_place"]
+        display = item["display"]
+        category = place.category
+        boost = float(place_boosts.get(place.id, 0)) + float(category_boosts.get(category, 0))
+        penalty = float(place_penalties.get(place.id, 0)) + float(category_penalties.get(category, 0))
+        environment_delta = 0.0
+        if indoor_bias and place.indoor and not place.outdoor:
+            environment_delta += indoor_bias * 0.32
+        if outdoor_penalty and place.outdoor and not place.indoor:
+            environment_delta -= outdoor_penalty * 0.46
+
+        quality_delta = boost * 0.45 - penalty * 0.7 + environment_delta
+        if quality_delta:
+            place.quality = recommendation_algorithm.clamp(place.quality + quality_delta)
+            place.mood_fit = {
+                mood: recommendation_algorithm.clamp(value + quality_delta * 0.45)
+                for mood, value in place.mood_fit.items()
+            }
+            display["preference_adjustment"] = {
+                "quality_delta": round(quality_delta, 4),
+                "category_boost": round(float(category_boosts.get(category, 0)), 4),
+                "place_boost": round(float(place_boosts.get(place.id, 0)), 4),
+                "place_penalty": round(float(place_penalties.get(place.id, 0)), 4),
+                "indoor_bias": round(indoor_bias, 4),
+            }
+
+    return candidates
+
+
 def primary_category(categories: list[str], text: str = "") -> str:
     blob = " ".join([*(categories or []), text]).lower()
     checks = [
         ("bookstore", r"書店|bookstore"),
-        ("riverside", r"河濱|水岸|碼頭|渡口|自行車道|riverside|river|pier|wharf|dock|waterfront"),
-        ("park", r"公園|森林|花園|步道|親山|登山|山系|park|trail"),
         ("museum", r"博物館|紀念館|museum"),
         ("gallery", r"美術館|藝文|藝術|gallery|文創"),
         ("restaurant", r"餐廳|restaurant|food|餐飲"),
+        ("cafe", r"咖啡|cafe"),
+        ("riverside", r"河濱|水岸|碼頭|渡口|自行車道|riverside|river|pier|wharf|dock|waterfront"),
+        ("park", r"公園|森林|花園|步道|親山|登山|山系|park|trail"),
         ("market", r"夜市|市場|market|商圈"),
         ("viewpoint", r"景觀|夜景|古蹟|景點|viewpoint|scenic|attraction|taipei_featured"),
-        ("cafe", r"咖啡|cafe"),
     ]
     for category, pattern in checks:
         if re.search(pattern, blob):
@@ -1017,10 +1562,16 @@ def display_budget_from_price(price: str) -> str:
 
 def place_environment(category: str, categories: list[str], text: str = "") -> tuple[bool, bool]:
     blob = " ".join([category, *(categories or []), text]).lower()
-    indoor_pattern = r"museum|gallery|bookstore|restaurant|cafe|博物館|美術館|書店|餐廳|咖啡|文創|紀念館|展覽|劇場|影城|會館|主題館|圖書館|商場|購物中心|旅館|飯店|寺|廟|宮|堂"
-    outdoor_pattern = r"park|riverside|viewpoint|trail|公園|森林|花園|河濱|水岸|碼頭|渡口|步道|親山|登山|山系|自行車道|廣場|露天|景觀|觀景|夜市|古蹟"
-    indoor = bool(re.search(indoor_pattern, blob))
-    outdoor = bool(re.search(outdoor_pattern, blob))
+    indoor_categories = {"museum", "gallery", "bookstore", "restaurant", "cafe"}
+    outdoor_categories = {"park", "riverside", "viewpoint", "market"}
+    strong_indoor_pattern = r"博物館|美術館|書店|餐廳|咖啡|咖啡館|文創|紀念館|展覽館|劇場|影城|會館|主題館|圖書館|商場|購物中心|旅館|飯店|寺|廟|宮|堂|museum|gallery|bookstore|restaurant|cafe|theater|mall|library"
+    strong_outdoor_pattern = r"公園|森林|花園|河濱|水岸|碼頭|渡口|步道|親山|登山|山系|自行車道|廣場|露天|戶外|景觀|觀景|夜市|古蹟|park|riverside|river|pier|wharf|dock|waterfront|trail|outdoor"
+    indoor = category in indoor_categories or bool(re.search(strong_indoor_pattern, blob))
+    outdoor = category in outdoor_categories or bool(re.search(strong_outdoor_pattern, blob))
+    if category in {"park", "riverside"}:
+        return False, True
+    if category == "viewpoint" and not indoor:
+        return False, True
     if outdoor and not indoor:
         return False, True
     if not indoor and not outdoor:
@@ -1097,7 +1648,7 @@ def normalize_place_payload(raw: dict[str, Any], criteria: dict[str, Any], conte
             }
     commute = None
     if destination["lat"] is not None and destination["lon"] is not None:
-        commute = compare_commute_options(origin, destination)
+        commute = compare_commute_options(origin, destination, modes=normalize_transport_modes(criteria.get("transportModes")))
     travel_time = (
         max(1, round(float(commute["best"]["duration_seconds"]) / 60))
         if commute
@@ -1106,7 +1657,15 @@ def normalize_place_payload(raw: dict[str, Any], criteria: dict[str, Any], conte
     price = place_price(category, categories)
     indoor, outdoor = place_environment(category, categories, text)
     open_status = raw_open_status(raw)
-    open_now = open_status.get("open_now") is True
+    if open_status.get("google_lat") is not None and open_status.get("google_lon") is not None:
+        destination = {"lat": open_status["google_lat"], "lon": open_status["google_lon"]}
+        raw = {
+            **raw,
+            "lat": open_status["google_lat"],
+            "lon": open_status["google_lon"],
+        }
+    # Unknown opening hours should not be treated as closed by the ranking filter.
+    open_now = open_status.get("open_now") is not False
 
     place = recommendation_algorithm.Place(
         id=str(raw.get("id") or raw.get("name")),
@@ -1136,6 +1695,9 @@ def normalize_place_payload(raw: dict[str, Any], criteria: dict[str, Any], conte
         "lat": raw.get("lat"),
         "lng": raw.get("lon") if raw.get("lon") is not None else raw.get("lng"),
         "lon": raw.get("lon") if raw.get("lon") is not None else raw.get("lng"),
+        "google_place_id": open_status.get("place_id"),
+        "google_name": open_status.get("google_name"),
+        "google_address": open_status.get("google_address"),
         "description": raw.get("description") or "資料來自台北景點搜尋平台，並由後端推薦引擎重新評分。",
         "matched_travel_time": travel_time,
         "travel_time_minutes": travel_time,
@@ -1320,10 +1882,15 @@ def build_recommendations(payload: dict[str, Any]) -> dict[str, Any]:
     session_id = payload.get("session_id") or criteria.get("session_id")
     include_transport = bool(payload.get("include_transport", True))
     request_id = str(uuid.uuid4())
+    preference_signals = build_session_preference_signals(session_id)
+    criteria = criteria_with_preference_signals(criteria, preference_signals)
 
     context = recommendation_context(criteria)
     user = user_context_from_criteria(criteria, context)
-    candidates = collect_candidate_places(criteria, context, limit)
+    candidates = apply_preference_signals_to_candidates(
+        collect_candidate_places(criteria, context, limit),
+        preference_signals,
+    )
     algorithm_places = [item["algorithm_place"] for item in candidates]
     displays_by_id = {item["algorithm_place"].id: item["display"] for item in candidates}
 
@@ -1337,6 +1904,7 @@ def build_recommendations(payload: dict[str, Any]) -> dict[str, Any]:
         {
             **result,
             "transport": transport_context.get("by_place", {}).get(result["id"]),
+            "backup_options": build_nearby_backups(result, criteria, context),
         }
         for result in preliminary
     ]
@@ -1353,6 +1921,7 @@ def build_recommendations(payload: dict[str, Any]) -> dict[str, Any]:
             "module": str(PROJECT_ROOT / "algorithm.py"),
             "filtered_reasons": dict(filtered_reasons),
         },
+        "preferences": preference_signals,
         "sqlite": {
             "status": "ok",
             "path": str(RECOMMENDATION_DB),
@@ -1409,7 +1978,12 @@ def api_route(payload: dict[str, Any] | None = Body(default=None)):
             raise ValueError("destination.lat and destination.lon are required")
         normalized_origin = {"lat": to_float(origin["lat"]), "lon": to_float(origin["lon"])}
         normalized_destination = {"lat": to_float(destination["lat"]), "lon": to_float(destination["lon"])}
-        return compare_commute_options(normalized_origin, normalized_destination, include_geometry=True)
+        return compare_commute_options(
+            normalized_origin,
+            normalized_destination,
+            modes=normalize_transport_modes(data.get("transportModes")),
+            include_geometry=True,
+        )
 
     return run_or_raise(build_route)
 
@@ -1489,9 +2063,40 @@ def api_places_search(
     )
 
 
+@app.get("/api/places/{place_id}")
+def api_place_detail(
+    place_id: str,
+    lat: float | None = None,
+    lon: float | None = None,
+    mood: str = "relaxing_walk",
+    distance: int = 30,
+    time_minutes: int = Query(120, alias="time"),
+    budget: str = "medium",
+    weather_preference: str = Query("any", alias="weatherPreference"),
+    transport_modes: str | None = Query(None, alias="transportModes"),
+    session_id: str | None = None,
+):
+    criteria = detail_criteria_from_query(
+        lat=lat,
+        lon=lon,
+        mood=mood,
+        distance=distance,
+        time_minutes=time_minutes,
+        budget=budget,
+        weather_preference=weather_preference,
+        transport_modes=transport_modes,
+    )
+    return run_or_raise(lambda: build_place_detail(place_id, criteria, session_id=session_id))
+
+
 @app.get("/api/districts")
 def api_districts():
     return run_or_raise(lambda: get_attraction_service().districts())
+
+
+@app.post("/api/recommend")
+def api_recommend(payload: dict[str, Any] | None = Body(default=None)):
+    return run_or_raise(lambda: build_recommendations(payload or {}))
 
 
 @app.post("/api/recommendations")

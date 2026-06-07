@@ -20,3 +20,12 @@ export const BUDGET_LABELS = {
   medium: "中等預算",
   flexible: "預算彈性",
 };
+
+export const TRANSPORT_MODES = [
+  { id: "car", label: "開車", icon: "car" },
+  { id: "bus", label: "公車", icon: "bus" },
+  { id: "mrt", label: "捷運", icon: "train" },
+  { id: "motorcycle", label: "機車", icon: "scooter" },
+  { id: "walking", label: "步行", icon: "walk" },
+  { id: "bicycle", label: "腳踏車", icon: "bicycle" },
+];
