@@ -1,9 +1,9 @@
+<script setup>
+import nextStopsLogo from "../assets/NEXT_STOPS.png";
+</script>
+
 <template>
-  <div class="app-icon" aria-label="NEXT STOPS">
-    <div class="icon-card">
-      <span></span>
-      <strong></strong>
-    </div>
-    <i></i>
+  <div class="app-icon" aria-label="NEXT STOPS logo">
+    <img :src="nextStopsLogo" alt="" />
   </div>
 </template>

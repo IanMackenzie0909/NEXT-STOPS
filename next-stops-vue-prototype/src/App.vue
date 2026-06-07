@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import BottomNav from "./components/BottomNav.vue";
 import DetailView from "./components/DetailView.vue";
 import HomeView from "./components/HomeView.vue";
@@ -9,6 +9,7 @@ import Toast from "./components/Toast.vue";
 import IconGlyph from "./components/IconGlyph.vue";
 import { deleteSavedPlace, getRecommendations, getSavedPlaces, savePlace, submitRecommendationFeedback, updateSavedPlace } from "./api/nextStopsApi";
 import { LOCATION_FALLBACK_LABEL } from "./constants";
+import appIconImage from "./assets/APP_ICON.png";
 
 const criteria = reactive({
   mood: "relaxing_walk",
@@ -33,10 +34,15 @@ const latestRequestId = ref("");
 const feedbackByPlace = ref({});
 const toastMessage = ref("");
 const ambientEnabled = ref(false);
+const booting = ref(true);
 let toastTimer;
 let audioContext;
 let ambientGain;
 let ambientNodes = [];
+
+watch(booting, (isBooting) => {
+  document.body.classList.toggle("startup-active", isBooting);
+}, { immediate: true });
 
 const routeName = computed(() => {
   if (route.value.startsWith("/place/")) return "detail";
@@ -264,11 +270,19 @@ onMounted(() => {
     route.value = window.location.hash.replace(/^#/, "") || "/";
   });
   syncSaved();
+  setTimeout(() => {
+    navigate("/");
+    booting.value = false;
+  }, 1800);
+});
+
+onBeforeUnmount(() => {
+  document.body.classList.remove("startup-active");
 });
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :class="{ booting }">
     <div class="app-surface">
       <div class="journey-background" aria-hidden="true">
         <span class="journey-grid"></span>
@@ -332,7 +346,7 @@ onMounted(() => {
       </Transition>
     </div>
     <button
-      v-if="routeName !== 'home'"
+      v-if="!booting && routeName !== 'home'"
       class="ambient-toggle"
       :class="{ active: ambientEnabled }"
       type="button"
@@ -342,7 +356,23 @@ onMounted(() => {
       <IconGlyph name="sound" />
       <span>{{ ambientEnabled ? "Sound on" : "Sound" }}</span>
     </button>
-    <BottomNav :route="route" :saved-count="saved.length" @navigate="handleNavigate" />
+    <BottomNav v-if="!booting" :route="route" :saved-count="saved.length" @navigate="handleNavigate" />
     <Toast :message="toastMessage" />
+
+    <Transition name="splash-fade">
+      <section v-if="booting" class="startup-splash" aria-live="polite">
+        <div class="startup-orbit" aria-hidden="true">
+          <span class="startup-ring one"></span>
+          <span class="startup-ring two"></span>
+          <span class="startup-route"></span>
+          <span class="startup-node a"></span>
+          <span class="startup-node b"></span>
+        </div>
+        <img class="startup-icon" :src="appIconImage" alt="NEXT STOPS" />
+        <div class="startup-copy">
+          <strong :style="{ fontSize: '30px' }">NEXT STOPS</strong>
+        </div>
+      </section>
+    </Transition>
   </div>
 </template>
