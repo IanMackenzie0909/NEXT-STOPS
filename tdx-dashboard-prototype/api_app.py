@@ -1106,7 +1106,8 @@ def normalize_place_payload(raw: dict[str, Any], criteria: dict[str, Any], conte
     price = place_price(category, categories)
     indoor, outdoor = place_environment(category, categories, text)
     open_status = raw_open_status(raw)
-    open_now = open_status.get("open_now") is True
+    # Unknown opening hours should not be treated as closed by the ranking filter.
+    open_now = open_status.get("open_now") is not False
 
     place = recommendation_algorithm.Place(
         id=str(raw.get("id") or raw.get("name")),
