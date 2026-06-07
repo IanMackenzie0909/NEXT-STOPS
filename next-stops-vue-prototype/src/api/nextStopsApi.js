@@ -177,9 +177,14 @@ export function googleDirectionsUrl(origin, destination, mode = "TRANSIT") {
   }[mode] || "transit";
   const params = new URLSearchParams({
     api: "1",
-    destination: `${destination.lat},${destination.lon ?? destination.lng}`,
+    destination: destination.google_place_id || destination.place_id
+      ? (destination.google_name || destination.name || destination.address || `${destination.lat},${destination.lon ?? destination.lng}`)
+      : `${destination.lat},${destination.lon ?? destination.lng}`,
     travelmode,
   });
+  if (destination.google_place_id || destination.place_id) {
+    params.set("destination_place_id", destination.google_place_id || destination.place_id);
+  }
   if (origin?.lat && (origin.lon || origin.lng)) {
     params.set("origin", `${origin.lat},${origin.lon ?? origin.lng}`);
   }

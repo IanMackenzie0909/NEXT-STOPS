@@ -47,7 +47,7 @@ const destination = computed(() => (
     ? { lat: place.value.lat, lon: place.value.lon ?? place.value.lng }
     : null
 ));
-const mapsUrl = computed(() => googleDirectionsUrl(origin.value, destination.value || {}, commute.value?.mode || "TRANSIT"));
+const mapsUrl = computed(() => googleDirectionsUrl(origin.value, place.value || destination.value || {}, commute.value?.mode || "TRANSIT"));
 
 let map;
 let originMarker;

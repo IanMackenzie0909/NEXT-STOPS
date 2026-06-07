@@ -1646,6 +1646,14 @@ def normalize_place_payload(raw: dict[str, Any], criteria: dict[str, Any], conte
                 "geocoded": True,
                 "geocoded_place_id": geocoded.get("place_id"),
             }
+    open_status = raw_open_status(raw)
+    if open_status.get("google_lat") is not None and open_status.get("google_lon") is not None:
+        destination = {"lat": open_status["google_lat"], "lon": open_status["google_lon"]}
+        raw = {
+            **raw,
+            "lat": open_status["google_lat"],
+            "lon": open_status["google_lon"],
+        }
     commute = None
     if destination["lat"] is not None and destination["lon"] is not None:
         commute = compare_commute_options(origin, destination, modes=normalize_transport_modes(criteria.get("transportModes")))
@@ -1656,14 +1664,6 @@ def normalize_place_payload(raw: dict[str, Any], criteria: dict[str, Any], conte
     )
     price = place_price(category, categories)
     indoor, outdoor = place_environment(category, categories, text)
-    open_status = raw_open_status(raw)
-    if open_status.get("google_lat") is not None and open_status.get("google_lon") is not None:
-        destination = {"lat": open_status["google_lat"], "lon": open_status["google_lon"]}
-        raw = {
-            **raw,
-            "lat": open_status["google_lat"],
-            "lon": open_status["google_lon"],
-        }
     # Unknown opening hours should not be treated as closed by the ranking filter.
     open_now = open_status.get("open_now") is not False
 
