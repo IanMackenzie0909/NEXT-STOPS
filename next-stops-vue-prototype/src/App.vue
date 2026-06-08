@@ -1,13 +1,32 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import BottomNav from "./components/BottomNav.vue";
+import AccountView from "./components/AccountView.vue";
 import DetailView from "./components/DetailView.vue";
 import HomeView from "./components/HomeView.vue";
 import ResultsView from "./components/ResultsView.vue";
 import SavedView from "./components/SavedView.vue";
 import Toast from "./components/Toast.vue";
 import IconGlyph from "./components/IconGlyph.vue";
-import { deleteSavedPlace, getRecommendations, getSavedPlaces, savePlace, submitRecommendationFeedback, updateSavedPlace } from "./api/nextStopsApi";
+import {
+  deleteSavedPlace,
+  getCurrentUser,
+  getDepartureLocations,
+  getRecommendations,
+  getRecommendationHistory,
+  getSavedPlaces,
+  getStoredUser,
+  getUserPreferences,
+  loginUser,
+  logoutUser,
+  registerUser,
+  savePlace,
+  saveDepartureLocation,
+  submitRecommendationFeedback,
+  deleteDepartureLocation,
+  updateSavedPlace,
+  updateUserPreferences,
+} from "./api/nextStopsApi";
 import { LOCATION_FALLBACK_LABEL } from "./constants";
 import appIconImage from "./assets/APP_ICON.png";
 import bgmTimeToTime from "../BGM/ES_Time to Time - Helmut Schenker.mp3";
@@ -39,6 +58,11 @@ const locating = ref(false);
 const recommendationError = ref("");
 const latestRequestId = ref("");
 const feedbackByPlace = ref({});
+const currentUser = ref(getStoredUser());
+const userPreferences = ref(null);
+const departureLocations = ref([]);
+const recommendationHistory = ref([]);
+const authLoading = ref(false);
 const toastMessage = ref("");
 const ambientEnabled = ref(false);
 const booting = ref(true);
@@ -60,6 +84,7 @@ const routeName = computed(() => {
   if (route.value.startsWith("/place/")) return "detail";
   if (route.value === "/results") return "results";
   if (route.value === "/saved") return "saved";
+  if (route.value === "/account") return "account";
   return "home";
 });
 const activePlaceId = computed(() => route.value.startsWith("/place/") ? decodeURIComponent(route.value.replace("/place/", "")) : "");
@@ -139,10 +164,15 @@ async function findStops() {
   results.value = [];
   navigate("/results");
   try {
-    if (criteria.locationSource !== "gps") await locateUser();
+    const hasDepartureCoordinates = Number.isFinite(Number(criteria.lat)) && Number.isFinite(Number(criteria.lon));
+    if (!hasDepartureCoordinates) await locateUser();
     const data = await getRecommendations({ ...criteria });
     latestRequestId.value = data.request_id || "";
     results.value = data.results || [];
+    if (currentUser.value) {
+      const historyData = await getRecommendationHistory(10).catch(() => ({ history: [] }));
+      recommendationHistory.value = historyData.history || [];
+    }
     if (!results.value.length) {
       recommendationError.value = data.request_id
         ? `後端已完成推薦請求 ${data.request_id}，但沒有回傳任何地點。請檢查景點資料 cache 或推薦篩選條件。`
@@ -159,6 +189,172 @@ async function findStops() {
 
 async function syncSaved() {
   saved.value = await getSavedPlaces();
+}
+
+async function syncAccount() {
+  if (!currentUser.value) return;
+  try {
+    currentUser.value = await getCurrentUser();
+    userPreferences.value = await getUserPreferences();
+    const locationData = await getDepartureLocations();
+    departureLocations.value = locationData.locations || [];
+    const historyData = await getRecommendationHistory(10);
+    recommendationHistory.value = historyData.history || [];
+    await syncSaved();
+  } catch {
+    currentUser.value = null;
+    userPreferences.value = null;
+    departureLocations.value = [];
+    recommendationHistory.value = [];
+  }
+}
+
+async function handleLogin(payload) {
+  authLoading.value = true;
+  try {
+    const data = await loginUser(payload);
+    currentUser.value = data.user;
+    await syncAccount();
+    showToast("Signed in");
+  } catch (error) {
+    showToast(error.message || "Login failed");
+  } finally {
+    authLoading.value = false;
+  }
+}
+
+async function handleRegister(payload) {
+  authLoading.value = true;
+  try {
+    const data = await registerUser(payload);
+    currentUser.value = data.user;
+    await syncAccount();
+    showToast("Account created");
+  } catch (error) {
+    showToast(error.message || "Registration failed");
+  } finally {
+    authLoading.value = false;
+  }
+}
+
+async function handleLogout() {
+  authLoading.value = true;
+  try {
+    await logoutUser();
+    currentUser.value = null;
+    userPreferences.value = null;
+    departureLocations.value = [];
+    recommendationHistory.value = [];
+    await syncSaved();
+    showToast("Signed out");
+  } catch (error) {
+    showToast(error.message || "Logout failed");
+  } finally {
+    authLoading.value = false;
+  }
+}
+
+async function handleSaveCurrentPreferences() {
+  if (!currentUser.value) {
+    navigate("/account");
+    showToast("Sign in to save preferences");
+    return;
+  }
+  authLoading.value = true;
+  try {
+    userPreferences.value = await updateUserPreferences({
+      default_mood: criteria.mood,
+      default_time_minutes: criteria.time,
+      default_distance_minutes: criteria.distance,
+      default_budget: criteria.budget,
+      default_weather_preference: criteria.weatherPreference,
+      preferred_transport_modes: Array.isArray(criteria.transportModes) ? criteria.transportModes : [],
+      home_location_label: criteria.locationLabel,
+      home_lat: criteria.lat,
+      home_lon: criteria.lon,
+    });
+    showToast("Preferences saved");
+  } catch (error) {
+    showToast(error.message || "Preference update failed");
+  } finally {
+    authLoading.value = false;
+  }
+}
+
+async function handleSaveCurrentLocation() {
+  if (!currentUser.value) {
+    navigate("/account");
+    showToast("Sign in to save locations");
+    return;
+  }
+  authLoading.value = true;
+  try {
+    if (criteria.lat === null || criteria.lat === undefined || criteria.lon === null || criteria.lon === undefined) {
+      const located = await locateUser();
+      if (!located) return;
+    }
+    const label = criteria.locationSource === "gps" ? "Current location" : (criteria.locationLabel || "Saved departure");
+    await saveDepartureLocation({
+      label,
+      address: criteria.locationLabel || "",
+      lat: criteria.lat,
+      lon: criteria.lon,
+      is_default: !departureLocations.value.length,
+    });
+    const data = await getDepartureLocations();
+    departureLocations.value = data.locations || [];
+    showToast("Location saved");
+  } catch (error) {
+    showToast(error.message || "Location save failed");
+  } finally {
+    authLoading.value = false;
+  }
+}
+
+async function handleSaveDepartureLocation(location) {
+  authLoading.value = true;
+  try {
+    await saveDepartureLocation(location);
+    const data = await getDepartureLocations();
+    departureLocations.value = data.locations || [];
+    showToast("Departure location saved");
+  } catch (error) {
+    showToast(error.message || "Location update failed");
+  } finally {
+    authLoading.value = false;
+  }
+}
+
+async function handleDeleteDepartureLocation(id) {
+  authLoading.value = true;
+  try {
+    await deleteDepartureLocation(id);
+    departureLocations.value = departureLocations.value.filter((item) => item.id !== id);
+    showToast("Departure location deleted");
+  } catch (error) {
+    showToast(error.message || "Location delete failed");
+  } finally {
+    authLoading.value = false;
+  }
+}
+
+function handleReuseRecommendation(criteriaSnapshot) {
+  if (!criteriaSnapshot || typeof criteriaSnapshot !== "object") return;
+  updateCriteria({
+    mood: criteriaSnapshot.mood || criteria.mood,
+    time: criteriaSnapshot.time || criteria.time,
+    distance: criteriaSnapshot.distance || criteria.distance,
+    location: criteriaSnapshot.location || criteria.location,
+    locationLabel: criteriaSnapshot.locationLabel || criteria.locationLabel,
+    locationSource: criteriaSnapshot.locationSource || criteria.locationSource,
+    lat: criteriaSnapshot.lat ?? criteria.lat,
+    lon: criteriaSnapshot.lon ?? criteria.lon,
+    weatherPreference: criteriaSnapshot.weatherPreference || criteria.weatherPreference,
+    budget: criteriaSnapshot.budget || criteria.budget,
+    transportModes: Array.isArray(criteriaSnapshot.transportModes) ? criteriaSnapshot.transportModes : criteria.transportModes,
+  });
+  navigate("/");
+  showToast("Recommendation settings restored");
 }
 
 async function toggleSave(place) {
@@ -339,6 +535,7 @@ onMounted(() => {
     navigate("/");
     booting.value = false;
   }, 1800);
+  syncAccount();
 });
 
 onBeforeUnmount(() => {
@@ -369,10 +566,17 @@ onBeforeUnmount(() => {
           :loading="loading"
           :locating="locating"
           :saved-count="saved.length"
+          :can-save-preferences="Boolean(currentUser)"
+          :saving-preferences="authLoading"
+          :can-save-location="Boolean(currentUser)"
+          :saving-location="authLoading"
+          :departure-locations="departureLocations"
           @update:criteria="updateCriteria"
           @locate="locateUser"
           @find="findStops"
           @navigate="handleNavigate"
+          @save-preferences="handleSaveCurrentPreferences"
+          @save-location="handleSaveCurrentLocation"
         />
         <ResultsView
           v-else-if="routeName === 'results'"
@@ -407,6 +611,21 @@ onBeforeUnmount(() => {
           @navigate="navigate"
           @remove="removeSaved"
           @update-note="updateNote"
+        />
+        <AccountView
+          v-else-if="routeName === 'account'"
+          key="account"
+          :user="currentUser"
+          :departure-locations="departureLocations"
+          :recommendation-history="recommendationHistory"
+          :loading="authLoading"
+          @navigate="navigate"
+          @login="handleLogin"
+          @register="handleRegister"
+          @logout="handleLogout"
+          @save-departure-location="handleSaveDepartureLocation"
+          @delete-departure-location="handleDeleteDepartureLocation"
+          @reuse-recommendation="handleReuseRecommendation"
         />
       </Transition>
     </div>

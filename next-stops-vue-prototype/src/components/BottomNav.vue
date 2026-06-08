@@ -12,15 +12,18 @@ function active(target) {
 </script>
 
 <template>
-  <nav class="bottom-nav" aria-label="主要導覽">
+  <nav class="bottom-nav" aria-label="Main navigation">
     <button :class="{ active: active('/') }" type="button" title="Home" @click="emit('navigate', '/')">
-      <span class="nav-icon">⌂</span><span>Home</span>
+      <span class="nav-icon">H</span><span>Home</span>
     </button>
     <button :class="{ active: active('/results') }" type="button" title="Explore" @click="emit('navigate', '/results')">
-      <span class="nav-icon">⌕</span><span>Explore</span>
+      <span class="nav-icon">E</span><span>Explore</span>
     </button>
     <button :class="{ active: active('/saved') }" type="button" title="Plan" @click="emit('navigate', '/saved')">
-      <span class="nav-icon">✓</span><span>Plan</span><i v-if="savedCount">{{ savedCount }}</i>
+      <span class="nav-icon">P</span><span>Plan</span><i v-if="savedCount">{{ savedCount }}</i>
+    </button>
+    <button :class="{ active: active('/account') }" type="button" title="Account" @click="emit('navigate', '/account')">
+      <span class="nav-icon">@</span><span>Account</span>
     </button>
   </nav>
 </template>

@@ -7,10 +7,13 @@ Run from this directory:
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import hmac
 import json
 import math
 import os
 import re
+import secrets
 import sqlite3
 import sys
 import threading
@@ -23,7 +26,7 @@ from typing import Any
 import requests
 
 try:
-    from fastapi import Body, FastAPI, HTTPException, Query
+    from fastapi import Body, FastAPI, Header, HTTPException, Query
     from fastapi.middleware.cors import CORSMiddleware
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("請先安裝 FastAPI dependencies：pip install -r requirements.txt") from exc
@@ -43,6 +46,9 @@ DEFAULT_MAPBOX_TOKEN = "your_mapbox_access_token"
 MAX_STATION_RESULTS = 300
 TDX_REQUEST_RETRIES = 2
 ROUTE_COMPARE_MODES = ("CAR", "BUS", "MRT", "MOTORCYCLE", "WALKING", "BICYCLE")
+PASSWORD_HASH_ITERATIONS = 210_000
+AUTH_TOKEN_BYTES = 32
+DEFAULT_TRIP_STATUS = "draft"
 
 SAMPLE_LOCATIONS = [
     {"name": "臺北車站", "lat": 25.0478, "lon": 121.5170},
@@ -214,7 +220,10 @@ except ImportError as exc:  # pragma: no cover
 app = FastAPI(title="NEXT STOPS Data API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("NEXT_STOPS_CORS_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173").split(","),
+    allow_origins=os.getenv(
+        "NEXT_STOPS_CORS_ORIGINS",
+        "http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:5174,http://localhost:5174",
+    ).split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -327,6 +336,115 @@ def to_float(value: object, default: float | None = None) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def json_text(value: Any) -> str:
+    return json.dumps(value if value is not None else [], ensure_ascii=False)
+
+
+def json_value(value: str | None, fallback: Any) -> Any:
+    try:
+        return json.loads(value or "")
+    except Exception:
+        return fallback
+
+
+def normalize_email(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        PASSWORD_HASH_ITERATIONS,
+    ).hex()
+    return f"pbkdf2_sha256${PASSWORD_HASH_ITERATIONS}${salt}${digest}"
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        algorithm, iterations, salt, expected = stored_hash.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        digest = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt.encode("utf-8"),
+            int(iterations),
+        ).hex()
+        return hmac.compare_digest(digest, expected)
+    except Exception:
+        return False
+
+
+def token_digest(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def bearer_token_from_header(authorization: str | None) -> str:
+    value = str(authorization or "").strip()
+    if not value:
+        raise HTTPException(status_code=401, detail="Authorization bearer token is required")
+    prefix = "Bearer "
+    if not value.lower().startswith(prefix.lower()):
+        raise HTTPException(status_code=401, detail="Authorization header must use Bearer token")
+    token = value[len(prefix):].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Authorization bearer token is required")
+    return token
+
+
+def public_user(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "email": row["email"],
+        "display_name": row["display_name"] or "",
+        "avatar_url": row["avatar_url"] or "",
+        "email_verified_at": row["email_verified_at"],
+        "last_login_at": row["last_login_at"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def create_auth_session(db: sqlite3.Connection, user_id: str) -> str:
+    token = secrets.token_urlsafe(AUTH_TOKEN_BYTES)
+    now = now_iso()
+    db.execute(
+        """
+        INSERT INTO auth_sessions (token_hash, user_id, created_at, last_used_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (token_digest(token), user_id, now, now),
+    )
+    return token
+
+
+def authenticated_user(authorization: str | None) -> dict[str, Any]:
+    token = bearer_token_from_header(authorization)
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        row = db.execute(
+            """
+            SELECT users.*
+            FROM auth_sessions
+            JOIN users ON users.id = auth_sessions.user_id
+            WHERE auth_sessions.token_hash = ?
+            """,
+            (token_digest(token),),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=401, detail="Invalid or expired auth token")
+        db.execute("UPDATE auth_sessions SET last_used_at = ? WHERE token_hash = ?", (now_iso(), token_digest(token)))
+        return dict(row)
+
+
+def user_session_scope(user_id: str) -> str:
+    return f"user:{user_id}"
 
 
 def haversine_m(lat1: float | None, lon1: float | None, lat2: float | None, lon2: float | None) -> float | None:
@@ -1154,6 +1272,81 @@ def build_place_detail(
 def init_recommendation_db() -> None:
     RECOMMENDATION_DB.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(RECOMMENDATION_DB) as db:
+        def ensure_column(table: str, column: str, definition: str) -> None:
+            columns = {row[1] for row in db.execute(f"PRAGMA table_info({table})").fetchall()}
+            if column not in columns:
+                db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                display_name TEXT,
+                avatar_url TEXT,
+                email_verified_at TEXT,
+                last_login_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auth_sessions (
+                token_hash TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+            """
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id)")
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_preferences (
+                user_id TEXT PRIMARY KEY,
+                default_mood TEXT,
+                default_time_minutes INTEGER,
+                default_distance_minutes INTEGER,
+                default_budget TEXT,
+                default_weather_preference TEXT,
+                preferred_transport_modes_json TEXT NOT NULL DEFAULT '[]',
+                avoid_transport_modes_json TEXT NOT NULL DEFAULT '[]',
+                favorite_categories_json TEXT NOT NULL DEFAULT '[]',
+                avoid_categories_json TEXT NOT NULL DEFAULT '[]',
+                preferred_opening_status TEXT,
+                home_location_label TEXT,
+                home_lat REAL,
+                home_lon REAL,
+                language TEXT,
+                ambient_sound_enabled INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+            """
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_departure_locations (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                label TEXT NOT NULL,
+                address TEXT,
+                lat REAL,
+                lon REAL,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+            """
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_departure_locations_user ON user_departure_locations(user_id, updated_at)")
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS recommendation_requests (
@@ -1203,7 +1396,13 @@ def init_recommendation_db() -> None:
             )
             """
         )
+        ensure_column("saved_places", "user_id", "TEXT")
+        ensure_column("saved_places", "source", "TEXT")
+        ensure_column("saved_places", "saved_reason", "TEXT")
+        ensure_column("saved_places", "is_visited", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column("saved_places", "visited_at", "TEXT")
         db.execute("CREATE INDEX IF NOT EXISTS idx_saved_places_session ON saved_places(session_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_saved_places_user ON saved_places(user_id)")
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS recommendation_feedback (
@@ -1217,7 +1416,31 @@ def init_recommendation_db() -> None:
             )
             """
         )
+        ensure_column("recommendation_feedback", "user_id", "TEXT")
+        ensure_column("recommendation_feedback", "criteria_snapshot_json", "TEXT")
+        ensure_column("recommendation_feedback", "place_snapshot_json", "TEXT")
         db.execute("CREATE INDEX IF NOT EXISTS idx_feedback_session ON recommendation_feedback(session_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_feedback_user ON recommendation_feedback(user_id)")
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS place_notes (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                place_id TEXT NOT NULL,
+                saved_place_id INTEGER,
+                trip_plan_stop_id TEXT,
+                note_type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                rating REAL,
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+            """
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_place_notes_user ON place_notes(user_id, updated_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_place_notes_place ON place_notes(user_id, place_id)")
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS user_preference_signals (
@@ -1227,6 +1450,53 @@ def init_recommendation_db() -> None:
             )
             """
         )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trip_plans (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                date TEXT,
+                start_location_label TEXT,
+                start_lat REAL,
+                start_lon REAL,
+                mood TEXT,
+                budget TEXT,
+                weather_preference TEXT,
+                transport_modes_json TEXT NOT NULL DEFAULT '[]',
+                total_duration_minutes INTEGER,
+                total_travel_minutes INTEGER,
+                status TEXT NOT NULL,
+                note TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+            """
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_trip_plans_user ON trip_plans(user_id, updated_at)")
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS trip_plan_stops (
+                id TEXT PRIMARY KEY,
+                trip_id TEXT NOT NULL,
+                place_id TEXT NOT NULL,
+                order_index INTEGER NOT NULL,
+                planned_arrival_at TEXT,
+                planned_leave_at TEXT,
+                stay_minutes INTEGER,
+                transport_mode_to_next TEXT,
+                travel_minutes_to_next INTEGER,
+                note TEXT,
+                is_completed INTEGER NOT NULL DEFAULT 0,
+                place_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(trip_id) REFERENCES trip_plans(id) ON DELETE CASCADE
+            )
+            """
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_trip_plan_stops_trip ON trip_plan_stops(trip_id, order_index)")
 
 
 def record_recommendation(
@@ -1301,6 +1571,336 @@ def fetch_recommendation_record(request_id: str) -> dict[str, Any] | None:
     }
 
 
+def list_user_recommendation_history(user_id: str, limit: int = 10) -> list[dict[str, Any]]:
+    session_id = user_session_scope(user_id)
+    limit = max(1, min(int(limit or 10), 50))
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        request_rows = db.execute(
+            """
+            SELECT *
+            FROM recommendation_requests
+            WHERE session_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (session_id, limit),
+        ).fetchall()
+        history = []
+        for request in request_rows:
+            result_rows = db.execute(
+                """
+                SELECT *
+                FROM recommendation_results
+                WHERE request_id = ?
+                ORDER BY rank
+                LIMIT 5
+                """,
+                (request["id"],),
+            ).fetchall()
+            history.append({
+                "id": request["id"],
+                "created_at": request["created_at"],
+                "criteria": json_value(request["criteria_json"], {}),
+                "context": json_value(request["context_json"], {}),
+                "source_status": json_value(request["source_status_json"], {}),
+                "count": request["result_count"],
+                "results": [json_value(row["result_json"], {}) for row in result_rows],
+            })
+    return history
+
+
+def register_user(payload: dict[str, Any]) -> dict[str, Any]:
+    email = normalize_email(payload.get("email"))
+    password = str(payload.get("password") or "")
+    display_name = str(payload.get("display_name") or payload.get("name") or "").strip()
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        raise ValueError("valid email is required")
+    if len(password) < 8:
+        raise ValueError("password must be at least 8 characters")
+    now = now_iso()
+    user_id = str(uuid.uuid4())
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        existing = db.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
+        if existing:
+            raise ValueError("email is already registered")
+        db.execute(
+            """
+            INSERT INTO users (
+                id, email, password_hash, display_name, avatar_url, email_verified_at, last_login_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (user_id, email, hash_password(password), display_name, "", None, now, now, now),
+        )
+        create_default_preferences(db, user_id, now)
+        token = create_auth_session(db, user_id)
+        row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return {"token": token, "user": public_user(row)}
+
+
+def login_user(payload: dict[str, Any]) -> dict[str, Any]:
+    email = normalize_email(payload.get("email"))
+    password = str(payload.get("password") or "")
+    if not email or not password:
+        raise ValueError("email and password are required")
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        row = db.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+        if row is None or not verify_password(password, row["password_hash"]):
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        now = now_iso()
+        db.execute("UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?", (now, now, row["id"]))
+        token = create_auth_session(db, row["id"])
+        updated = db.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone()
+    return {"token": token, "user": public_user(updated)}
+
+
+def logout_user(authorization: str | None) -> dict[str, Any]:
+    token = bearer_token_from_header(authorization)
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        cursor = db.execute("DELETE FROM auth_sessions WHERE token_hash = ?", (token_digest(token),))
+    return {"ok": True, "deleted": cursor.rowcount}
+
+
+def update_user_profile(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    display_name = str(payload.get("display_name") or payload.get("name") or "").strip()
+    avatar_url = str(payload.get("avatar_url") or "").strip()
+    now = now_iso()
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        db.execute(
+            "UPDATE users SET display_name = ?, avatar_url = ?, updated_at = ? WHERE id = ?",
+            (display_name, avatar_url, now, user_id),
+        )
+        row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    return public_user(row)
+
+
+def create_default_preferences(db: sqlite3.Connection, user_id: str, now: str | None = None) -> None:
+    timestamp = now or now_iso()
+    db.execute(
+        """
+        INSERT OR IGNORE INTO user_preferences (
+            user_id,
+            default_mood,
+            default_time_minutes,
+            default_distance_minutes,
+            default_budget,
+            default_weather_preference,
+            preferred_transport_modes_json,
+            avoid_transport_modes_json,
+            favorite_categories_json,
+            avoid_categories_json,
+            preferred_opening_status,
+            home_location_label,
+            home_lat,
+            home_lon,
+            language,
+            ambient_sound_enabled,
+            created_at,
+            updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            user_id,
+            "relaxing_walk",
+            120,
+            30,
+            "medium",
+            "any",
+            "[]",
+            "[]",
+            "[]",
+            "[]",
+            "",
+            "",
+            None,
+            None,
+            "zh-TW",
+            0,
+            timestamp,
+            timestamp,
+        ),
+    )
+
+
+def preference_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "user_id": row["user_id"],
+        "default_mood": row["default_mood"] or "relaxing_walk",
+        "default_time_minutes": row["default_time_minutes"] or 120,
+        "default_distance_minutes": row["default_distance_minutes"] or 30,
+        "default_budget": row["default_budget"] or "medium",
+        "default_weather_preference": row["default_weather_preference"] or "any",
+        "preferred_transport_modes": json_value(row["preferred_transport_modes_json"], []),
+        "avoid_transport_modes": json_value(row["avoid_transport_modes_json"], []),
+        "favorite_categories": json_value(row["favorite_categories_json"], []),
+        "avoid_categories": json_value(row["avoid_categories_json"], []),
+        "preferred_opening_status": row["preferred_opening_status"] or "",
+        "home_location_label": row["home_location_label"] or "",
+        "home_lat": row["home_lat"],
+        "home_lon": row["home_lon"],
+        "language": row["language"] or "zh-TW",
+        "ambient_sound_enabled": bool(row["ambient_sound_enabled"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def get_user_preferences(user_id: str) -> dict[str, Any]:
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        create_default_preferences(db, user_id)
+        row = db.execute("SELECT * FROM user_preferences WHERE user_id = ?", (user_id,)).fetchone()
+    return preference_from_row(row)
+
+
+def update_user_preferences(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    current = get_user_preferences(user_id)
+    next_values = {**current, **payload}
+    now = now_iso()
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        db.execute(
+            """
+            UPDATE user_preferences SET
+                default_mood = ?,
+                default_time_minutes = ?,
+                default_distance_minutes = ?,
+                default_budget = ?,
+                default_weather_preference = ?,
+                preferred_transport_modes_json = ?,
+                avoid_transport_modes_json = ?,
+                favorite_categories_json = ?,
+                avoid_categories_json = ?,
+                preferred_opening_status = ?,
+                home_location_label = ?,
+                home_lat = ?,
+                home_lon = ?,
+                language = ?,
+                ambient_sound_enabled = ?,
+                updated_at = ?
+            WHERE user_id = ?
+            """,
+            (
+                next_values.get("default_mood") or "relaxing_walk",
+                int(next_values.get("default_time_minutes") or 120),
+                int(next_values.get("default_distance_minutes") or 30),
+                next_values.get("default_budget") or "medium",
+                next_values.get("default_weather_preference") or "any",
+                json_text(next_values.get("preferred_transport_modes") or []),
+                json_text(next_values.get("avoid_transport_modes") or []),
+                json_text(next_values.get("favorite_categories") or []),
+                json_text(next_values.get("avoid_categories") or []),
+                next_values.get("preferred_opening_status") or "",
+                next_values.get("home_location_label") or "",
+                to_float(next_values.get("home_lat")),
+                to_float(next_values.get("home_lon")),
+                next_values.get("language") or "zh-TW",
+                1 if next_values.get("ambient_sound_enabled") else 0,
+                now,
+                user_id,
+            ),
+        )
+        row = db.execute("SELECT * FROM user_preferences WHERE user_id = ?", (user_id,)).fetchone()
+    return preference_from_row(row)
+
+
+def departure_location_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "user_id": row["user_id"],
+        "label": row["label"],
+        "address": row["address"] or "",
+        "lat": row["lat"],
+        "lon": row["lon"],
+        "is_default": bool(row["is_default"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def list_user_departure_locations(user_id: str) -> list[dict[str, Any]]:
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        rows = db.execute(
+            """
+            SELECT *
+            FROM user_departure_locations
+            WHERE user_id = ?
+            ORDER BY is_default DESC, updated_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [departure_location_from_row(row) for row in rows]
+
+
+def upsert_user_departure_location(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    label = str(payload.get("label") or "").strip()
+    if not label:
+        raise ValueError("label is required")
+    location_id = str(payload.get("id") or uuid.uuid4())
+    now = now_iso()
+    is_default = 1 if payload.get("is_default") else 0
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        existing = db.execute("SELECT user_id FROM user_departure_locations WHERE id = ?", (location_id,)).fetchone()
+        if existing is not None and existing["user_id"] != user_id:
+            raise HTTPException(status_code=403, detail="Cannot modify another user's departure location")
+        if is_default:
+            db.execute("UPDATE user_departure_locations SET is_default = 0 WHERE user_id = ?", (user_id,))
+        db.execute(
+            """
+            INSERT INTO user_departure_locations (
+                id, user_id, label, address, lat, lon, is_default, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                label = excluded.label,
+                address = excluded.address,
+                lat = excluded.lat,
+                lon = excluded.lon,
+                is_default = excluded.is_default,
+                updated_at = excluded.updated_at
+            """,
+            (
+                location_id,
+                user_id,
+                label,
+                str(payload.get("address") or ""),
+                to_float(payload.get("lat")),
+                to_float(payload.get("lon")),
+                is_default,
+                now,
+                now,
+            ),
+        )
+        row = db.execute(
+            "SELECT * FROM user_departure_locations WHERE user_id = ? AND id = ?",
+            (user_id, location_id),
+        ).fetchone()
+    return departure_location_from_row(row)
+
+
+def delete_user_departure_location(user_id: str, location_id: str) -> dict[str, Any]:
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        cursor = db.execute(
+            "DELETE FROM user_departure_locations WHERE user_id = ? AND id = ?",
+            (user_id, location_id),
+        )
+    return {"ok": True, "deleted": cursor.rowcount}
+
+
 def saved_place_from_row(row: sqlite3.Row) -> dict[str, Any]:
     place = json.loads(row["place_json"])
     return {
@@ -1311,7 +1911,12 @@ def saved_place_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "address": row["address"],
         "lat": row["lat"],
         "lng": row["lng"],
+        "lon": row["lng"],
         "note": row["note"] or "",
+        "source": row["source"] or place.get("source") or "",
+        "saved_reason": row["saved_reason"] or "",
+        "is_visited": bool(row["is_visited"]),
+        "visited_at": row["visited_at"],
         "saved_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -1407,6 +2012,488 @@ def remove_saved_place(session_id: str, place_id: str) -> dict[str, Any]:
     return {"ok": True, "deleted": cursor.rowcount}
 
 
+def list_user_saved_places(user_id: str) -> list[dict[str, Any]]:
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        rows = db.execute(
+            "SELECT * FROM saved_places WHERE user_id = ? ORDER BY updated_at DESC",
+            (user_id,),
+        ).fetchall()
+    return [saved_place_from_row(row) for row in rows]
+
+
+def upsert_user_saved_place(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    place = payload.get("place") or payload
+    if not isinstance(place, dict) or not place.get("id") or not place.get("name"):
+        raise ValueError("place.id and place.name are required")
+    place_id = str(place["id"])
+    now = now_iso()
+    session_id = user_session_scope(user_id)
+    lat = to_float(place.get("lat"))
+    lng = to_float(place.get("lng") if place.get("lng") is not None else place.get("lon"))
+    note = str(payload.get("note") if payload.get("note") is not None else place.get("note") or "")
+    saved_reason = str(payload.get("saved_reason") or place.get("saved_reason") or "")
+    source = str(payload.get("source") or place.get("source") or "")
+    is_visited = 1 if (payload.get("is_visited") or place.get("is_visited")) else 0
+    visited_at = payload.get("visited_at") or place.get("visited_at")
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        db.execute(
+            """
+            INSERT INTO saved_places (
+                session_id, user_id, place_id, name, category, address, lat, lng, note,
+                source, saved_reason, is_visited, visited_at, place_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id, place_id) DO UPDATE SET
+                user_id = excluded.user_id,
+                name = excluded.name,
+                category = excluded.category,
+                address = excluded.address,
+                lat = excluded.lat,
+                lng = excluded.lng,
+                note = excluded.note,
+                source = excluded.source,
+                saved_reason = excluded.saved_reason,
+                is_visited = excluded.is_visited,
+                visited_at = excluded.visited_at,
+                place_json = excluded.place_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                session_id,
+                user_id,
+                place_id,
+                str(place.get("name") or ""),
+                str(place.get("category") or ""),
+                str(place.get("address") or ""),
+                lat,
+                lng,
+                note,
+                source,
+                saved_reason,
+                is_visited,
+                visited_at,
+                json.dumps({**place, "note": note, "saved_reason": saved_reason}, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        row = db.execute(
+            "SELECT * FROM saved_places WHERE user_id = ? AND place_id = ?",
+            (user_id, place_id),
+        ).fetchone()
+    build_session_preference_signals(session_id)
+    return saved_place_from_row(row)
+
+
+def update_user_saved_place(user_id: str, place_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    init_recommendation_db()
+    now = now_iso()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        row = db.execute(
+            "SELECT * FROM saved_places WHERE user_id = ? AND place_id = ?",
+            (user_id, place_id),
+        ).fetchone()
+        if row is None:
+            return None
+        place_json = json_value(row["place_json"], {})
+        note = str(payload.get("note") if payload.get("note") is not None else row["note"] or "")
+        saved_reason = str(payload.get("saved_reason") if payload.get("saved_reason") is not None else row["saved_reason"] or "")
+        is_visited = 1 if (payload.get("is_visited") if "is_visited" in payload else row["is_visited"]) else 0
+        visited_at = payload.get("visited_at") if "visited_at" in payload else row["visited_at"]
+        place_json.update({"note": note, "saved_reason": saved_reason, "is_visited": bool(is_visited), "visited_at": visited_at})
+        db.execute(
+            """
+            UPDATE saved_places
+            SET note = ?, saved_reason = ?, is_visited = ?, visited_at = ?, place_json = ?, updated_at = ?
+            WHERE user_id = ? AND place_id = ?
+            """,
+            (note, saved_reason, is_visited, visited_at, json.dumps(place_json, ensure_ascii=False), now, user_id, place_id),
+        )
+        updated = db.execute(
+            "SELECT * FROM saved_places WHERE user_id = ? AND place_id = ?",
+            (user_id, place_id),
+        ).fetchone()
+    sync_saved_place_note_to_place_notes(user_id, place_id, note)
+    build_session_preference_signals(user_session_scope(user_id))
+    return saved_place_from_row(updated)
+
+
+def remove_user_saved_place(user_id: str, place_id: str) -> dict[str, Any]:
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        cursor = db.execute(
+            "DELETE FROM saved_places WHERE user_id = ? AND place_id = ?",
+            (user_id, place_id),
+        )
+    build_session_preference_signals(user_session_scope(user_id))
+    return {"ok": True, "deleted": cursor.rowcount}
+
+
+def place_note_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "user_id": row["user_id"],
+        "place_id": row["place_id"],
+        "saved_place_id": row["saved_place_id"],
+        "trip_plan_stop_id": row["trip_plan_stop_id"],
+        "note_type": row["note_type"],
+        "content": row["content"],
+        "rating": row["rating"],
+        "tags": json_value(row["tags_json"], []),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def list_place_notes(user_id: str, place_id: str | None = None) -> list[dict[str, Any]]:
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        if place_id:
+            rows = db.execute(
+                "SELECT * FROM place_notes WHERE user_id = ? AND place_id = ? ORDER BY updated_at DESC",
+                (user_id, place_id),
+            ).fetchall()
+        else:
+            rows = db.execute(
+                "SELECT * FROM place_notes WHERE user_id = ? ORDER BY updated_at DESC",
+                (user_id,),
+            ).fetchall()
+    return [place_note_from_row(row) for row in rows]
+
+
+def upsert_place_note(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    place_id = str(payload.get("place_id") or "").strip()
+    content = str(payload.get("content") if payload.get("content") is not None else payload.get("note") or "").strip()
+    if not place_id:
+        raise ValueError("place_id is required")
+    if not content:
+        raise ValueError("content is required")
+    now = now_iso()
+    note_id = str(payload.get("id") or uuid.uuid4())
+    note_type = str(payload.get("note_type") or "general").strip() or "general"
+    tags = payload.get("tags") or []
+    if not isinstance(tags, list):
+        raise ValueError("tags must be a list")
+    rating = to_float(payload.get("rating"))
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        existing = db.execute("SELECT user_id FROM place_notes WHERE id = ?", (note_id,)).fetchone()
+        if existing is not None and existing["user_id"] != user_id:
+            raise HTTPException(status_code=403, detail="Cannot modify another user's place note")
+        db.execute(
+            """
+            INSERT INTO place_notes (
+                id, user_id, place_id, saved_place_id, trip_plan_stop_id, note_type,
+                content, rating, tags_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                place_id = excluded.place_id,
+                saved_place_id = excluded.saved_place_id,
+                trip_plan_stop_id = excluded.trip_plan_stop_id,
+                note_type = excluded.note_type,
+                content = excluded.content,
+                rating = excluded.rating,
+                tags_json = excluded.tags_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                note_id,
+                user_id,
+                place_id,
+                payload.get("saved_place_id"),
+                payload.get("trip_plan_stop_id"),
+                note_type,
+                content,
+                rating,
+                json.dumps(tags, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        row = db.execute("SELECT * FROM place_notes WHERE user_id = ? AND id = ?", (user_id, note_id)).fetchone()
+    return place_note_from_row(row)
+
+
+def update_place_note(user_id: str, note_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        row = db.execute("SELECT * FROM place_notes WHERE user_id = ? AND id = ?", (user_id, note_id)).fetchone()
+        if row is None:
+            return None
+        content = str(payload.get("content") if payload.get("content") is not None else row["content"]).strip()
+        if not content:
+            raise ValueError("content is required")
+        tags = payload.get("tags") if "tags" in payload else json_value(row["tags_json"], [])
+        if not isinstance(tags, list):
+            raise ValueError("tags must be a list")
+        db.execute(
+            """
+            UPDATE place_notes
+            SET note_type = ?, content = ?, rating = ?, tags_json = ?, updated_at = ?
+            WHERE user_id = ? AND id = ?
+            """,
+            (
+                payload.get("note_type") or row["note_type"],
+                content,
+                to_float(payload.get("rating"), row["rating"]),
+                json.dumps(tags, ensure_ascii=False),
+                now_iso(),
+                user_id,
+                note_id,
+            ),
+        )
+        updated = db.execute("SELECT * FROM place_notes WHERE user_id = ? AND id = ?", (user_id, note_id)).fetchone()
+    return place_note_from_row(updated)
+
+
+def delete_place_note(user_id: str, note_id: str) -> dict[str, Any]:
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        cursor = db.execute("DELETE FROM place_notes WHERE user_id = ? AND id = ?", (user_id, note_id))
+    return {"ok": True, "deleted": cursor.rowcount}
+
+
+def sync_saved_place_note_to_place_notes(user_id: str, place_id: str, note: str) -> dict[str, Any] | None:
+    content = str(note or "").strip()
+    if not content:
+        return None
+    existing = list_place_notes(user_id, place_id)
+    general_note = next((item for item in existing if item.get("note_type") == "saved_note"), None)
+    payload = {
+        "id": general_note["id"] if general_note else None,
+        "place_id": place_id,
+        "note_type": "saved_note",
+        "content": content,
+    }
+    return upsert_place_note(user_id, payload)
+
+
+def trip_stop_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "trip_id": row["trip_id"],
+        "place_id": row["place_id"],
+        "order_index": row["order_index"],
+        "planned_arrival_at": row["planned_arrival_at"],
+        "planned_leave_at": row["planned_leave_at"],
+        "stay_minutes": row["stay_minutes"],
+        "transport_mode_to_next": row["transport_mode_to_next"] or "",
+        "travel_minutes_to_next": row["travel_minutes_to_next"],
+        "note": row["note"] or "",
+        "is_completed": bool(row["is_completed"]),
+        "place": json_value(row["place_snapshot_json"], {}),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def trip_plan_from_row(row: sqlite3.Row, stops: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "user_id": row["user_id"],
+        "title": row["title"],
+        "date": row["date"],
+        "start_location_label": row["start_location_label"] or "",
+        "start_lat": row["start_lat"],
+        "start_lon": row["start_lon"],
+        "mood": row["mood"] or "",
+        "budget": row["budget"] or "",
+        "weather_preference": row["weather_preference"] or "",
+        "transport_modes": json_value(row["transport_modes_json"], []),
+        "total_duration_minutes": row["total_duration_minutes"],
+        "total_travel_minutes": row["total_travel_minutes"],
+        "status": row["status"],
+        "note": row["note"] or "",
+        "stops": stops or [],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def fetch_trip_stops(db: sqlite3.Connection, trip_id: str) -> list[dict[str, Any]]:
+    rows = db.execute(
+        "SELECT * FROM trip_plan_stops WHERE trip_id = ? ORDER BY order_index, created_at",
+        (trip_id,),
+    ).fetchall()
+    return [trip_stop_from_row(row) for row in rows]
+
+
+def replace_trip_stops(db: sqlite3.Connection, trip_id: str, stops: list[Any], now: str) -> None:
+    db.execute("DELETE FROM trip_plan_stops WHERE trip_id = ?", (trip_id,))
+    for index, raw_stop in enumerate(stops):
+        if not isinstance(raw_stop, dict):
+            continue
+        place = raw_stop.get("place") if isinstance(raw_stop.get("place"), dict) else {}
+        place_id = str(raw_stop.get("place_id") or place.get("id") or "").strip()
+        if not place_id:
+            raise ValueError("trip stop place_id is required")
+        db.execute(
+            """
+            INSERT INTO trip_plan_stops (
+                id, trip_id, place_id, order_index, planned_arrival_at, planned_leave_at,
+                stay_minutes, transport_mode_to_next, travel_minutes_to_next, note,
+                is_completed, place_snapshot_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(raw_stop.get("id") or uuid.uuid4()),
+                trip_id,
+                place_id,
+                int(raw_stop.get("order_index") if raw_stop.get("order_index") is not None else index),
+                raw_stop.get("planned_arrival_at"),
+                raw_stop.get("planned_leave_at"),
+                int(raw_stop.get("stay_minutes")) if raw_stop.get("stay_minutes") not in (None, "") else None,
+                str(raw_stop.get("transport_mode_to_next") or ""),
+                int(raw_stop.get("travel_minutes_to_next")) if raw_stop.get("travel_minutes_to_next") not in (None, "") else None,
+                str(raw_stop.get("note") or ""),
+                1 if raw_stop.get("is_completed") else 0,
+                json.dumps(place or raw_stop.get("place_snapshot") or {}, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+
+
+def list_trip_plans(user_id: str) -> list[dict[str, Any]]:
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        rows = db.execute(
+            "SELECT * FROM trip_plans WHERE user_id = ? ORDER BY updated_at DESC",
+            (user_id,),
+        ).fetchall()
+        trips = []
+        for row in rows:
+            trips.append(trip_plan_from_row(row, fetch_trip_stops(db, row["id"])))
+    return trips
+
+
+def get_trip_plan(user_id: str, trip_id: str) -> dict[str, Any] | None:
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        row = db.execute("SELECT * FROM trip_plans WHERE user_id = ? AND id = ?", (user_id, trip_id)).fetchone()
+        if row is None:
+            return None
+        return trip_plan_from_row(row, fetch_trip_stops(db, trip_id))
+
+
+def create_trip_plan(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    title = str(payload.get("title") or "").strip()
+    if not title:
+        raise ValueError("trip title is required")
+    trip_id = str(payload.get("id") or uuid.uuid4())
+    now = now_iso()
+    stops = payload.get("stops") or []
+    if not isinstance(stops, list):
+        raise ValueError("stops must be a list")
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        db.execute(
+            """
+            INSERT INTO trip_plans (
+                id, user_id, title, date, start_location_label, start_lat, start_lon,
+                mood, budget, weather_preference, transport_modes_json,
+                total_duration_minutes, total_travel_minutes, status, note, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                trip_id,
+                user_id,
+                title,
+                payload.get("date"),
+                payload.get("start_location_label") or "",
+                to_float(payload.get("start_lat")),
+                to_float(payload.get("start_lon")),
+                payload.get("mood") or "",
+                payload.get("budget") or "",
+                payload.get("weather_preference") or "",
+                json_text(payload.get("transport_modes") or []),
+                int(payload.get("total_duration_minutes")) if payload.get("total_duration_minutes") not in (None, "") else None,
+                int(payload.get("total_travel_minutes")) if payload.get("total_travel_minutes") not in (None, "") else None,
+                payload.get("status") or DEFAULT_TRIP_STATUS,
+                payload.get("note") or "",
+                now,
+                now,
+            ),
+        )
+        replace_trip_stops(db, trip_id, stops, now)
+        row = db.execute("SELECT * FROM trip_plans WHERE id = ?", (trip_id,)).fetchone()
+        return trip_plan_from_row(row, fetch_trip_stops(db, trip_id))
+
+
+def update_trip_plan(user_id: str, trip_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    existing = get_trip_plan(user_id, trip_id)
+    if existing is None:
+        return None
+    next_values = {**existing, **payload}
+    now = now_iso()
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        db.execute(
+            """
+            UPDATE trip_plans SET
+                title = ?,
+                date = ?,
+                start_location_label = ?,
+                start_lat = ?,
+                start_lon = ?,
+                mood = ?,
+                budget = ?,
+                weather_preference = ?,
+                transport_modes_json = ?,
+                total_duration_minutes = ?,
+                total_travel_minutes = ?,
+                status = ?,
+                note = ?,
+                updated_at = ?
+            WHERE user_id = ? AND id = ?
+            """,
+            (
+                next_values.get("title") or existing["title"],
+                next_values.get("date"),
+                next_values.get("start_location_label") or "",
+                to_float(next_values.get("start_lat")),
+                to_float(next_values.get("start_lon")),
+                next_values.get("mood") or "",
+                next_values.get("budget") or "",
+                next_values.get("weather_preference") or "",
+                json_text(next_values.get("transport_modes") or []),
+                int(next_values.get("total_duration_minutes")) if next_values.get("total_duration_minutes") not in (None, "") else None,
+                int(next_values.get("total_travel_minutes")) if next_values.get("total_travel_minutes") not in (None, "") else None,
+                next_values.get("status") or DEFAULT_TRIP_STATUS,
+                next_values.get("note") or "",
+                now,
+                user_id,
+                trip_id,
+            ),
+        )
+        if "stops" in payload:
+            stops = payload.get("stops") or []
+            if not isinstance(stops, list):
+                raise ValueError("stops must be a list")
+            replace_trip_stops(db, trip_id, stops, now)
+        row = db.execute("SELECT * FROM trip_plans WHERE user_id = ? AND id = ?", (user_id, trip_id)).fetchone()
+        return trip_plan_from_row(row, fetch_trip_stops(db, trip_id))
+
+
+def delete_trip_plan(user_id: str, trip_id: str) -> dict[str, Any]:
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.execute("DELETE FROM trip_plan_stops WHERE trip_id IN (SELECT id FROM trip_plans WHERE user_id = ? AND id = ?)", (user_id, trip_id))
+        cursor = db.execute("DELETE FROM trip_plans WHERE user_id = ? AND id = ?", (user_id, trip_id))
+    return {"ok": True, "deleted": cursor.rowcount}
+
+
 def record_feedback(payload: dict[str, Any]) -> dict[str, Any]:
     session_id = str(payload.get("session_id") or "").strip()
     place_id = str(payload.get("place_id") or "").strip()
@@ -1432,6 +2519,39 @@ def record_feedback(payload: dict[str, Any]) -> dict[str, Any]:
                 place_id,
                 feedback_type,
                 payload.get("note"),
+                now_iso(),
+            ),
+        )
+    signals = build_session_preference_signals(session_id)
+    return {"ok": True, "id": cursor.lastrowid, "signals": signals}
+
+
+def record_user_feedback(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    place_id = str(payload.get("place_id") or "").strip()
+    feedback_type = str(payload.get("feedback_type") or "").strip()
+    if not place_id:
+        raise ValueError("place_id is required")
+    if not feedback_type:
+        raise ValueError("feedback_type is required")
+    session_id = user_session_scope(user_id)
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        cursor = db.execute(
+            """
+            INSERT INTO recommendation_feedback (
+                session_id, user_id, request_id, place_id, feedback_type, note,
+                criteria_snapshot_json, place_snapshot_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                user_id,
+                payload.get("request_id"),
+                place_id,
+                feedback_type,
+                payload.get("note"),
+                json.dumps(payload.get("criteria_snapshot") or {}, ensure_ascii=False),
+                json.dumps(payload.get("place_snapshot") or {}, ensure_ascii=False),
                 now_iso(),
             ),
         )
@@ -2289,13 +3409,21 @@ def api_districts():
 
 
 @app.post("/api/recommend")
-def api_recommend(payload: dict[str, Any] | None = Body(default=None)):
-    return run_or_raise(lambda: build_recommendations(payload or {}))
+def api_recommend(payload: dict[str, Any] | None = Body(default=None), authorization: str | None = Header(default=None)):
+    data = dict(payload or {})
+    if authorization:
+        user = authenticated_user(authorization)
+        data["session_id"] = user_session_scope(user["id"])
+    return run_or_raise(lambda: build_recommendations(data))
 
 
 @app.post("/api/recommendations")
-def api_recommendations(payload: dict[str, Any] | None = Body(default=None)):
-    return run_or_raise(lambda: build_recommendations(payload or {}))
+def api_recommendations(payload: dict[str, Any] | None = Body(default=None), authorization: str | None = Header(default=None)):
+    data = dict(payload or {})
+    if authorization:
+        user = authenticated_user(authorization)
+        data["session_id"] = user_session_scope(user["id"])
+    return run_or_raise(lambda: build_recommendations(data))
 
 
 @app.get("/api/recommendations/{request_id}")
@@ -2304,6 +3432,188 @@ def api_recommendation_record(request_id: str):
     if record is None:
         raise HTTPException(status_code=404, detail="Recommendation request not found")
     return record
+
+
+@app.post("/api/auth/register")
+def api_auth_register(payload: dict[str, Any] | None = Body(default=None)):
+    return run_or_raise(lambda: register_user(payload or {}))
+
+
+@app.post("/api/auth/login")
+def api_auth_login(payload: dict[str, Any] | None = Body(default=None)):
+    return run_or_raise(lambda: login_user(payload or {}))
+
+
+@app.post("/api/auth/logout")
+def api_auth_logout(authorization: str | None = Header(default=None)):
+    return run_or_raise(lambda: logout_user(authorization))
+
+
+@app.get("/api/me")
+def api_me(authorization: str | None = Header(default=None)):
+    user = authenticated_user(authorization)
+    return {"user": public_user(user)}
+
+
+@app.patch("/api/me")
+def api_update_me(payload: dict[str, Any] | None = Body(default=None), authorization: str | None = Header(default=None)):
+    user = authenticated_user(authorization)
+    return {"user": run_or_raise(lambda: update_user_profile(user["id"], payload or {}))}
+
+
+@app.get("/api/me/preferences")
+def api_me_preferences(authorization: str | None = Header(default=None)):
+    user = authenticated_user(authorization)
+    return run_or_raise(lambda: get_user_preferences(user["id"]))
+
+
+@app.patch("/api/me/preferences")
+def api_update_me_preferences(payload: dict[str, Any] | None = Body(default=None), authorization: str | None = Header(default=None)):
+    user = authenticated_user(authorization)
+    return run_or_raise(lambda: update_user_preferences(user["id"], payload or {}))
+
+
+@app.get("/api/me/departure-locations")
+def api_me_departure_locations(authorization: str | None = Header(default=None)):
+    user = authenticated_user(authorization)
+    return run_or_raise(lambda: {"locations": list_user_departure_locations(user["id"])})
+
+
+@app.post("/api/me/departure-locations")
+def api_me_save_departure_location(payload: dict[str, Any] | None = Body(default=None), authorization: str | None = Header(default=None)):
+    user = authenticated_user(authorization)
+    return run_or_raise(lambda: upsert_user_departure_location(user["id"], payload or {}))
+
+
+@app.patch("/api/me/departure-locations/{location_id}")
+def api_me_update_departure_location(
+    location_id: str,
+    payload: dict[str, Any] | None = Body(default=None),
+    authorization: str | None = Header(default=None),
+):
+    user = authenticated_user(authorization)
+    data = {**(payload or {}), "id": location_id}
+    return run_or_raise(lambda: upsert_user_departure_location(user["id"], data))
+
+
+@app.delete("/api/me/departure-locations/{location_id}")
+def api_me_delete_departure_location(location_id: str, authorization: str | None = Header(default=None)):
+    user = authenticated_user(authorization)
+    return run_or_raise(lambda: delete_user_departure_location(user["id"], location_id))
+
+
+@app.get("/api/me/saved-places")
+def api_me_saved_places(authorization: str | None = Header(default=None)):
+    user = authenticated_user(authorization)
+    return run_or_raise(lambda: {"saved": list_user_saved_places(user["id"])})
+
+
+@app.post("/api/me/saved-places")
+def api_me_save_place(payload: dict[str, Any] | None = Body(default=None), authorization: str | None = Header(default=None)):
+    user = authenticated_user(authorization)
+    return run_or_raise(lambda: upsert_user_saved_place(user["id"], payload or {}))
+
+
+@app.patch("/api/me/saved-places/{place_id}")
+def api_me_update_saved_place(
+    place_id: str,
+    payload: dict[str, Any] | None = Body(default=None),
+    authorization: str | None = Header(default=None),
+):
+    user = authenticated_user(authorization)
+    updated = run_or_raise(lambda: update_user_saved_place(user["id"], place_id, payload or {}))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Saved place not found")
+    return updated
+
+
+@app.delete("/api/me/saved-places/{place_id}")
+def api_me_delete_saved_place(place_id: str, authorization: str | None = Header(default=None)):
+    user = authenticated_user(authorization)
+    return run_or_raise(lambda: remove_user_saved_place(user["id"], place_id))
+
+
+@app.get("/api/me/place-notes")
+def api_me_place_notes(place_id: str | None = None, authorization: str | None = Header(default=None)):
+    user = authenticated_user(authorization)
+    return run_or_raise(lambda: {"notes": list_place_notes(user["id"], place_id)})
+
+
+@app.post("/api/me/place-notes")
+def api_me_create_place_note(payload: dict[str, Any] | None = Body(default=None), authorization: str | None = Header(default=None)):
+    user = authenticated_user(authorization)
+    return run_or_raise(lambda: upsert_place_note(user["id"], payload or {}))
+
+
+@app.patch("/api/me/place-notes/{note_id}")
+def api_me_update_place_note(
+    note_id: str,
+    payload: dict[str, Any] | None = Body(default=None),
+    authorization: str | None = Header(default=None),
+):
+    user = authenticated_user(authorization)
+    note = run_or_raise(lambda: update_place_note(user["id"], note_id, payload or {}))
+    if note is None:
+        raise HTTPException(status_code=404, detail="Place note not found")
+    return note
+
+
+@app.delete("/api/me/place-notes/{note_id}")
+def api_me_delete_place_note(note_id: str, authorization: str | None = Header(default=None)):
+    user = authenticated_user(authorization)
+    return run_or_raise(lambda: delete_place_note(user["id"], note_id))
+
+
+@app.post("/api/me/recommendation-feedback")
+def api_me_recommendation_feedback(payload: dict[str, Any] | None = Body(default=None), authorization: str | None = Header(default=None)):
+    user = authenticated_user(authorization)
+    return run_or_raise(lambda: record_user_feedback(user["id"], payload or {}))
+
+
+@app.get("/api/me/recommendation-history")
+def api_me_recommendation_history(limit: int = 10, authorization: str | None = Header(default=None)):
+    user = authenticated_user(authorization)
+    return run_or_raise(lambda: {"history": list_user_recommendation_history(user["id"], limit)})
+
+
+@app.get("/api/me/trip-plans")
+def api_me_trip_plans(authorization: str | None = Header(default=None)):
+    user = authenticated_user(authorization)
+    return run_or_raise(lambda: {"trips": list_trip_plans(user["id"])})
+
+
+@app.post("/api/me/trip-plans")
+def api_me_create_trip_plan(payload: dict[str, Any] | None = Body(default=None), authorization: str | None = Header(default=None)):
+    user = authenticated_user(authorization)
+    return run_or_raise(lambda: create_trip_plan(user["id"], payload or {}))
+
+
+@app.get("/api/me/trip-plans/{trip_id}")
+def api_me_trip_plan(trip_id: str, authorization: str | None = Header(default=None)):
+    user = authenticated_user(authorization)
+    trip = run_or_raise(lambda: get_trip_plan(user["id"], trip_id))
+    if trip is None:
+        raise HTTPException(status_code=404, detail="Trip plan not found")
+    return trip
+
+
+@app.patch("/api/me/trip-plans/{trip_id}")
+def api_me_update_trip_plan(
+    trip_id: str,
+    payload: dict[str, Any] | None = Body(default=None),
+    authorization: str | None = Header(default=None),
+):
+    user = authenticated_user(authorization)
+    trip = run_or_raise(lambda: update_trip_plan(user["id"], trip_id, payload or {}))
+    if trip is None:
+        raise HTTPException(status_code=404, detail="Trip plan not found")
+    return trip
+
+
+@app.delete("/api/me/trip-plans/{trip_id}")
+def api_me_delete_trip_plan(trip_id: str, authorization: str | None = Header(default=None)):
+    user = authenticated_user(authorization)
+    return run_or_raise(lambda: delete_trip_plan(user["id"], trip_id))
 
 
 @app.get("/api/saved-places")

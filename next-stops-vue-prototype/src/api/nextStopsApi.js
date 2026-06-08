@@ -2,6 +2,8 @@ const DATA_API_BASE = import.meta.env.VITE_NEXT_STOPS_API_BASE || "";
 const SAVED_KEY = "nextstops:vue-prototype:saved";
 const PLACE_CACHE_KEY = "nextstops:vue-prototype:places";
 const SESSION_KEY = "nextstops:vue-prototype:session";
+const AUTH_TOKEN_KEY = "nextstops:vue-prototype:auth-token";
+const AUTH_USER_KEY = "nextstops:vue-prototype:auth-user";
 
 let placeCache = loadJson(PLACE_CACHE_KEY, []);
 
@@ -18,9 +20,157 @@ async function fetchJson(base, path, options = {}) {
   return data;
 }
 
+function authHeaders() {
+  const token = getAuthToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+export function getAuthToken() {
+  return localStorage.getItem(AUTH_TOKEN_KEY) || "";
+}
+
+export function getStoredUser() {
+  return loadJson(AUTH_USER_KEY, null);
+}
+
+export function isSignedIn() {
+  return Boolean(getAuthToken());
+}
+
+function storeAuthSession(data) {
+  if (data?.token) localStorage.setItem(AUTH_TOKEN_KEY, data.token);
+  if (data?.user) saveJson(AUTH_USER_KEY, data.user);
+  return data;
+}
+
+export async function registerUser({ email, password, displayName = "" }) {
+  return storeAuthSession(await fetchJson(DATA_API_BASE, "/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify({ email, password, display_name: displayName }),
+  }));
+}
+
+export async function loginUser({ email, password }) {
+  return storeAuthSession(await fetchJson(DATA_API_BASE, "/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  }));
+}
+
+export async function logoutUser() {
+  try {
+    await fetchJson(DATA_API_BASE, "/api/auth/logout", {
+      method: "POST",
+      headers: authHeaders(),
+    });
+  } finally {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem(AUTH_USER_KEY);
+  }
+  return { ok: true };
+}
+
+export async function getCurrentUser() {
+  const data = await fetchJson(DATA_API_BASE, "/api/me", { headers: authHeaders() });
+  if (data.user) saveJson(AUTH_USER_KEY, data.user);
+  return data.user;
+}
+
+export async function getUserPreferences() {
+  return fetchJson(DATA_API_BASE, "/api/me/preferences", { headers: authHeaders() });
+}
+
+export async function updateUserPreferences(preferences) {
+  return fetchJson(DATA_API_BASE, "/api/me/preferences", {
+    method: "PATCH",
+    headers: authHeaders(),
+    body: JSON.stringify(preferences),
+  });
+}
+
+export async function getDepartureLocations() {
+  return fetchJson(DATA_API_BASE, "/api/me/departure-locations", { headers: authHeaders() });
+}
+
+export async function saveDepartureLocation(location) {
+  const id = location?.id;
+  return fetchJson(DATA_API_BASE, id ? `/api/me/departure-locations/${encodeURIComponent(id)}` : "/api/me/departure-locations", {
+    method: id ? "PATCH" : "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(location),
+  });
+}
+
+export async function deleteDepartureLocation(id) {
+  return fetchJson(DATA_API_BASE, `/api/me/departure-locations/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+}
+
+export async function getRecommendationHistory(limit = 10) {
+  return fetchJson(DATA_API_BASE, `/api/me/recommendation-history?limit=${encodeURIComponent(limit)}`, { headers: authHeaders() });
+}
+
+export async function getTripPlans() {
+  return fetchJson(DATA_API_BASE, "/api/me/trip-plans", { headers: authHeaders() });
+}
+
+export async function createTripPlan(trip) {
+  return fetchJson(DATA_API_BASE, "/api/me/trip-plans", {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(trip),
+  });
+}
+
+export async function updateTripPlan(id, trip) {
+  return fetchJson(DATA_API_BASE, `/api/me/trip-plans/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: authHeaders(),
+    body: JSON.stringify(trip),
+  });
+}
+
+export async function deleteTripPlan(id) {
+  return fetchJson(DATA_API_BASE, `/api/me/trip-plans/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+}
+
+export async function getPlaceNotes(placeId = "") {
+  const query = placeId ? `?place_id=${encodeURIComponent(placeId)}` : "";
+  return fetchJson(DATA_API_BASE, `/api/me/place-notes${query}`, { headers: authHeaders() });
+}
+
+export async function savePlaceNote(note) {
+  return fetchJson(DATA_API_BASE, "/api/me/place-notes", {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(note),
+  });
+}
+
+export async function updatePlaceNote(id, note) {
+  return fetchJson(DATA_API_BASE, `/api/me/place-notes/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: authHeaders(),
+    body: JSON.stringify(note),
+  });
+}
+
+export async function deletePlaceNote(id) {
+  return fetchJson(DATA_API_BASE, `/api/me/place-notes/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+}
+
 export async function getRecommendations(criteria) {
   const data = await fetchJson(DATA_API_BASE, "/api/recommend", {
     method: "POST",
+    headers: authHeaders(),
     body: JSON.stringify({
       criteria,
       session_id: getSessionId(),
@@ -65,6 +215,17 @@ export async function getPlace(id, criteria = {}) {
 }
 
 export async function getSavedPlaces() {
+  if (isSignedIn()) {
+    try {
+      const data = await fetchJson(DATA_API_BASE, "/api/me/saved-places", { headers: authHeaders() });
+      const saved = (data.saved || []).map(normalizeRecommendationResult);
+      saveJson(SAVED_KEY, saved);
+      rememberPlaces(saved);
+      return saved;
+    } catch {
+      // Fall back to anonymous local state if the login session is no longer valid.
+    }
+  }
   try {
     const data = await fetchJson(DATA_API_BASE, `/api/saved-places?session_id=${encodeURIComponent(getSessionId())}`);
     const saved = (data.saved || []).map(normalizeRecommendationResult);
@@ -77,6 +238,21 @@ export async function getSavedPlaces() {
 }
 
 export async function savePlace(item) {
+  if (isSignedIn()) {
+    try {
+      const savedItem = normalizeRecommendationResult(await fetchJson(DATA_API_BASE, "/api/me/saved-places", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ place: item, note: item.note || "" }),
+      }));
+      const localSaved = loadJson(SAVED_KEY, []);
+      saveJson(SAVED_KEY, [savedItem, ...localSaved.filter((entry) => entry.id !== savedItem.id)]);
+      rememberPlaces([savedItem]);
+      return savedItem;
+    } catch {
+      // Keep offline prototype behavior available.
+    }
+  }
   const payload = {
     session_id: getSessionId(),
     place: item,
@@ -104,6 +280,21 @@ function savePlaceLocal(item) {
 }
 
 export async function updateSavedPlace(id, body) {
+  if (isSignedIn()) {
+    try {
+      const savedItem = normalizeRecommendationResult(await fetchJson(DATA_API_BASE, `/api/me/saved-places/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: authHeaders(),
+        body: JSON.stringify(body),
+      }));
+      const next = loadJson(SAVED_KEY, []).map((item) => (item.id === id ? savedItem : item));
+      saveJson(SAVED_KEY, next);
+      rememberPlaces([savedItem]);
+      return savedItem;
+    } catch {
+      // Keep offline prototype behavior available.
+    }
+  }
   try {
     const savedItem = normalizeRecommendationResult(await fetchJson(DATA_API_BASE, `/api/saved-places/${encodeURIComponent(id)}`, {
       method: "PATCH",
@@ -125,6 +316,18 @@ function updateSavedPlaceLocal(id, body) {
 }
 
 export async function deleteSavedPlace(id) {
+  if (isSignedIn()) {
+    try {
+      await fetchJson(DATA_API_BASE, `/api/me/saved-places/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: authHeaders(),
+      });
+    } catch {
+      // Keep local prototype behavior available when the API is offline.
+    }
+    saveJson(SAVED_KEY, loadJson(SAVED_KEY, []).filter((item) => item.id !== id));
+    return { ok: true };
+  }
   try {
     await fetchJson(DATA_API_BASE, `/api/saved-places/${encodeURIComponent(id)}?session_id=${encodeURIComponent(getSessionId())}`, {
       method: "DELETE",
@@ -137,6 +340,18 @@ export async function deleteSavedPlace(id) {
 }
 
 export async function submitRecommendationFeedback(placeId, feedbackType, requestId = "", note = "") {
+  if (isSignedIn()) {
+    return fetchJson(DATA_API_BASE, "/api/me/recommendation-feedback", {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({
+        request_id: requestId,
+        place_id: placeId,
+        feedback_type: feedbackType,
+        note,
+      }),
+    });
+  }
   return fetchJson(DATA_API_BASE, "/api/recommendation-feedback", {
     method: "POST",
     body: JSON.stringify({
