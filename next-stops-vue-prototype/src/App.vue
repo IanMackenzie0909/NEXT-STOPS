@@ -10,6 +10,12 @@ import IconGlyph from "./components/IconGlyph.vue";
 import { deleteSavedPlace, getRecommendations, getSavedPlaces, savePlace, submitRecommendationFeedback, updateSavedPlace } from "./api/nextStopsApi";
 import { LOCATION_FALLBACK_LABEL } from "./constants";
 import appIconImage from "./assets/APP_ICON.png";
+import bgmTimeToTime from "../BGM/ES_Time to Time - Helmut Schenker.wav";
+import bgmSoftWeight from "../BGM/ES_Soft Weight of Slow Desire - Jay Taylor.wav";
+
+const AMBIENT_VOLUME = 0.34;
+const AMBIENT_FADE_MS = 1400;
+const ambientTracks = [bgmTimeToTime, bgmSoftWeight];
 
 const criteria = reactive({
   mood: "relaxing_walk",
@@ -37,9 +43,12 @@ const toastMessage = ref("");
 const ambientEnabled = ref(false);
 const booting = ref(true);
 let toastTimer;
-let audioContext;
-let ambientGain;
-let ambientNodes = [];
+let ambientAudio;
+let ambientTrackIndex = 0;
+let ambientFadeFrame;
+let ambientFadeStartedAt = 0;
+let ambientFadeFrom = 0;
+let ambientFadeTo = 0;
 
 watch(booting, (isBooting) => {
   document.body.classList.toggle("startup-active", isBooting);
@@ -214,56 +223,73 @@ async function toggleAmbient() {
     return;
   }
   try {
-    startAmbient();
+    await startAmbient();
     ambientEnabled.value = true;
   } catch (error) {
     showToast(`音景無法啟用：${error.message}`);
   }
 }
 
-function startAmbient() {
-  const AudioContext = globalThis.AudioContext || globalThis.webkitAudioContext;
-  if (!AudioContext) throw new Error("瀏覽器不支援 Web Audio");
-  audioContext = audioContext || new AudioContext();
-  if (audioContext.state === "suspended") audioContext.resume();
-  ambientGain = audioContext.createGain();
-  ambientGain.gain.setValueAtTime(0.0001, audioContext.currentTime);
-  ambientGain.gain.exponentialRampToValueAtTime(0.035, audioContext.currentTime + 1.6);
-  ambientGain.connect(audioContext.destination);
-  ambientNodes = [196, 246.94, 329.63].map((frequency, index) => {
-    const oscillator = audioContext.createOscillator();
-    const gain = audioContext.createGain();
-    oscillator.type = index === 0 ? "sine" : "triangle";
-    oscillator.frequency.value = frequency;
-    gain.gain.value = index === 0 ? 0.48 : 0.18;
-    oscillator.connect(gain);
-    gain.connect(ambientGain);
-    oscillator.start();
-    return { oscillator, gain };
+function ensureAmbientAudio() {
+  if (ambientAudio) return ambientAudio;
+  ambientAudio = new Audio(ambientTracks[ambientTrackIndex]);
+  ambientAudio.preload = "auto";
+  ambientAudio.loop = false;
+  ambientAudio.volume = 0;
+  ambientAudio.addEventListener("ended", playNextAmbientTrack);
+  return ambientAudio;
+}
+
+async function startAmbient() {
+  const audio = ensureAmbientAudio();
+  if (!ambientTracks.length) throw new Error("找不到背景音樂檔案");
+  if (audio.paused) await audio.play();
+  fadeAmbientVolume(AMBIENT_VOLUME, AMBIENT_FADE_MS);
+}
+
+function playNextAmbientTrack() {
+  if (!ambientEnabled.value || !ambientAudio) return;
+  ambientTrackIndex = (ambientTrackIndex + 1) % ambientTracks.length;
+  ambientAudio.src = ambientTracks[ambientTrackIndex];
+  ambientAudio.currentTime = 0;
+  ambientAudio.volume = AMBIENT_VOLUME;
+  ambientAudio.play().catch((error) => {
+    ambientEnabled.value = false;
+    showToast(`背景音樂無法播放：${error.message}`);
   });
 }
 
-function stopAmbient() {
-  ambientEnabled.value = false;
-  if (!audioContext || !ambientGain) return;
-  const stopAt = audioContext.currentTime + 0.8;
-  ambientGain.gain.cancelScheduledValues(audioContext.currentTime);
-  ambientGain.gain.setValueAtTime(Math.max(ambientGain.gain.value, 0.0001), audioContext.currentTime);
-  ambientGain.gain.exponentialRampToValueAtTime(0.0001, stopAt);
-  setTimeout(() => {
-    for (const node of ambientNodes) {
-      try {
-        node.oscillator.stop();
-        node.oscillator.disconnect();
-        node.gain.disconnect();
-      } catch {
-        // Oscillators can only be stopped once.
-      }
+function fadeAmbientVolume(targetVolume, durationMs, onDone) {
+  const audio = ensureAmbientAudio();
+  cancelAnimationFrame(ambientFadeFrame);
+  ambientFadeStartedAt = performance.now();
+  ambientFadeFrom = audio.volume;
+  ambientFadeTo = targetVolume;
+
+  const tick = (now) => {
+    const progress = Math.min((now - ambientFadeStartedAt) / durationMs, 1);
+    const eased = 1 - Math.pow(1 - progress, 3);
+    audio.volume = ambientFadeFrom + ((ambientFadeTo - ambientFadeFrom) * eased);
+    if (progress < 1) {
+      ambientFadeFrame = requestAnimationFrame(tick);
+      return;
     }
-    ambientNodes = [];
-    ambientGain?.disconnect();
-    ambientGain = null;
-  }, 900);
+    ambientFadeFrame = null;
+    onDone?.();
+  };
+  ambientFadeFrame = requestAnimationFrame(tick);
+}
+
+function stopAmbient(options = {}) {
+  ambientEnabled.value = false;
+  if (!ambientAudio) return;
+  cancelAnimationFrame(ambientFadeFrame);
+  const pauseAudio = () => {
+    ambientAudio.pause();
+    ambientAudio.volume = 0;
+  };
+  if (options.immediate) pauseAudio();
+  else fadeAmbientVolume(0, 900, pauseAudio);
 }
 
 onMounted(() => {
@@ -278,6 +304,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  stopAmbient({ immediate: true });
   document.body.classList.remove("startup-active");
 });
 </script>

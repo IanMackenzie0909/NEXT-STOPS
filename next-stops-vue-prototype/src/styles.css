@@ -2289,7 +2289,7 @@ input:focus-visible {
 
   .screen {
     min-height: 100vh;
-    padding: 28px 16px 112px;
+    padding: 28px 16px 130px;
   }
 
   .journey-grid {
@@ -2350,6 +2350,21 @@ input:focus-visible {
 
   .select-grid {
     grid-template-columns: 1fr;
+  }
+
+  .calm-select-menu {
+    position: relative;
+    top: auto;
+    margin-top: 8px;
+    box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
+  }
+
+  .dropdown-field {
+    min-height: 0;
+  }
+
+  .home-screen .choice-panel {
+    margin-bottom: 44px;
   }
 
   .transport-grid {

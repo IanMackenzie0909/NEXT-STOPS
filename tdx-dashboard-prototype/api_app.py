@@ -1524,7 +1524,31 @@ def apply_preference_signals_to_candidates(candidates: list[dict[str, Any]], sig
     return candidates
 
 
-def primary_category(categories: list[str], text: str = "") -> str:
+def primary_category(categories: list[str], text: str = "", name: str = "") -> str:
+    name_blob = str(name or "").lower()
+    if re.search(r"河濱|水岸|碼頭|渡口|riverside|river|pier|wharf|dock|waterfront", name_blob):
+        return "riverside"
+    if re.search(r"公園|森林|花園|步道|親山|登山|山系|park|trail", name_blob):
+        return "park"
+    if re.search(r"商圈|夜市|市場|market", name_blob):
+        return "market"
+    if re.search(r"書店|bookstore", name_blob):
+        return "bookstore"
+    if re.search(r"博物館|紀念館|museum", name_blob):
+        return "museum"
+    if re.search(r"美術館|藝文|藝術|gallery|文創", name_blob):
+        return "gallery"
+    if re.search(r"餐廳|restaurant|food|餐飲", name_blob):
+        return "restaurant"
+    if re.search(r"咖啡|cafe", name_blob):
+        return "cafe"
+
+    category_blob = " ".join(categories or []).lower()
+    if re.search(r"自然風景|河濱|riverside", category_blob):
+        return "riverside"
+    if re.search(r"商圈|市場|夜市|market", category_blob):
+        return "market"
+
     blob = " ".join([*(categories or []), text]).lower()
     checks = [
         ("bookstore", r"書店|bookstore"),
@@ -1610,7 +1634,7 @@ def normalize_place_payload(raw: dict[str, Any], criteria: dict[str, Any], conte
         str(raw.get("district") or ""),
         " ".join(categories),
     ])
-    category = primary_category(categories, text)
+    category = primary_category(categories, text, raw.get("name") or "")
     quality = float(raw.get("quality_score") or raw.get("score") or 0.55)
     if quality > 1:
         quality /= 100

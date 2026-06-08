@@ -147,6 +147,9 @@ def hard_filter(place: Place, user: UserContext) -> Tuple[bool, str | None]:
     if place.is_event and not place.event_active:
         return False, "event_ended"
 
+    if user.indoor_only and place.category in {"park", "riverside"}:
+        return False, "not_indoor"
+
     if user.indoor_only and not place.indoor:
         return False, "not_indoor"
 
