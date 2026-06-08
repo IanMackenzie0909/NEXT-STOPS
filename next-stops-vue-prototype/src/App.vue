@@ -1,13 +1,29 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import AuthView from "./components/AuthView.vue";
 import BottomNav from "./components/BottomNav.vue";
 import DetailView from "./components/DetailView.vue";
 import HomeView from "./components/HomeView.vue";
+import ProfileView from "./components/ProfileView.vue";
 import ResultsView from "./components/ResultsView.vue";
 import SavedView from "./components/SavedView.vue";
 import Toast from "./components/Toast.vue";
 import IconGlyph from "./components/IconGlyph.vue";
-import { deleteSavedPlace, getRecommendations, getSavedPlaces, savePlace, submitRecommendationFeedback, updateSavedPlace } from "./api/nextStopsApi";
+import {
+  clearStoredAuth,
+  deleteAccount,
+  deleteSavedPlace,
+  getCurrentUser,
+  getRecommendations,
+  getSavedPlaces,
+  getStoredAuth,
+  logoutAccount,
+  savePlace,
+  submitRecommendationFeedback,
+  updateSavedPlace,
+  updateUserProfile,
+  updateUserPreferences,
+} from "./api/nextStopsApi";
 import { LOCATION_FALLBACK_LABEL } from "./constants";
 import appIconImage from "./assets/APP_ICON.png";
 import bgmTimeToTime from "../BGM/ES_Time to Time - Helmut Schenker.mp3";
@@ -29,6 +45,7 @@ const criteria = reactive({
   weatherPreference: "any",
   budget: "medium",
   transportModes: [],
+  weightAdjustments: {},
 });
 
 const route = ref(window.location.hash.replace(/^#/, "") || "/");
@@ -42,6 +59,7 @@ const feedbackByPlace = ref({});
 const toastMessage = ref("");
 const ambientEnabled = ref(false);
 const booting = ref(true);
+const authUser = ref(null);
 let toastTimer;
 let ambientAudio;
 let ambientTrackIndex = 0;
@@ -54,12 +72,19 @@ let ambientGestureStartHandler;
 
 watch(booting, (isBooting) => {
   document.body.classList.toggle("startup-active", isBooting);
+  if (!isBooting) {
+    startAmbientIfPossible(true).then((started) => {
+      if (!started) armAmbientGestureStart();
+    });
+  }
 }, { immediate: true });
 
 const routeName = computed(() => {
+  if (!authUser.value) return "auth";
   if (route.value.startsWith("/place/")) return "detail";
   if (route.value === "/results") return "results";
   if (route.value === "/saved") return "saved";
+  if (route.value === "/profile") return "profile";
   return "home";
 });
 const activePlaceId = computed(() => route.value.startsWith("/place/") ? decodeURIComponent(route.value.replace("/place/", "")) : "");
@@ -67,6 +92,7 @@ const savedIds = computed(() => saved.value.map((item) => item.id));
 
 function navigate(path) {
   const target = path || "/";
+  if (!authUser.value && target !== "/") return;
   if (window.location.hash.replace(/^#/, "") === target) route.value = target;
   else window.location.hash = target;
 }
@@ -82,6 +108,18 @@ function handleNavigate(path) {
 
 function updateCriteria(updates) {
   Object.assign(criteria, updates);
+}
+
+function applyUserPreferences(user) {
+  criteria.weightAdjustments = { ...(user?.preferences?.weightAdjustments || {}) };
+}
+
+async function setAuthenticated(auth) {
+  authUser.value = auth?.user || null;
+  applyUserPreferences(authUser.value);
+  route.value = "/";
+  window.location.hash = "/";
+  await syncSaved();
 }
 
 function locateUser() {
@@ -207,6 +245,52 @@ async function submitFeedback(placeId, feedbackType) {
   }
 }
 
+async function savePreferences(preferences) {
+  try {
+    const user = await updateUserPreferences(preferences);
+    authUser.value = user;
+    applyUserPreferences(user);
+    showToast("偏好已更新");
+  } catch (error) {
+    showToast(`偏好無法儲存：${error.message}`);
+  }
+}
+
+async function saveProfile(profile) {
+  try {
+    const user = await updateUserProfile(profile);
+    authUser.value = user;
+    showToast("個人資料已更新");
+  } catch (error) {
+    showToast(`個人資料無法儲存：${error.message}`);
+  }
+}
+
+async function logout() {
+  await logoutAccount();
+  authUser.value = null;
+  saved.value = [];
+  results.value = [];
+  navigate("/");
+}
+
+async function removeAccount() {
+  try {
+    if (authUser.value?.provider === "guest") {
+      clearStoredAuth();
+    } else {
+      await deleteAccount();
+    }
+    authUser.value = null;
+    saved.value = [];
+    results.value = [];
+    showToast("帳號資料已移除");
+    navigate("/");
+  } catch (error) {
+    showToast(`帳號刪除失敗：${error.message}`);
+  }
+}
+
 function fallbackPlace(id) {
   return results.value.find((place) => place.id === id) || saved.value.find((place) => place.id === id) || null;
 }
@@ -234,6 +318,7 @@ function ensureAmbientAudio() {
   ambientAudio.preload = "auto";
   ambientAudio.loop = false;
   ambientAudio.volume = 0;
+  ambientAudio.autoplay = true;
   ambientAudio.addEventListener("ended", playNextAmbientTrack);
   return ambientAudio;
 }
@@ -334,18 +419,45 @@ onMounted(() => {
   startAmbientIfPossible(true).then((started) => {
     if (!started) armAmbientGestureStart();
   });
-  syncSaved();
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+  const storedAuth = getStoredAuth();
+  if (storedAuth?.user) {
+    authUser.value = storedAuth.user;
+    applyUserPreferences(storedAuth.user);
+    getCurrentUser()
+      .then((data) => {
+        if (data?.user) {
+          authUser.value = data.user;
+          applyUserPreferences(data.user);
+        }
+      })
+      .catch(() => {
+        clearStoredAuth();
+        authUser.value = null;
+      })
+      .finally(() => {
+        if (authUser.value) syncSaved();
+      });
+  }
   setTimeout(() => {
-    navigate("/");
+    if (authUser.value) navigate("/");
     booting.value = false;
   }, 1800);
 });
 
 onBeforeUnmount(() => {
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
   removeAmbientGestureStart();
   stopAmbient({ immediate: true });
   document.body.classList.remove("startup-active");
 });
+
+function handleVisibilityChange() {
+  if (document.visibilityState !== "visible" || booting.value || ambientEnabled.value) return;
+  startAmbientIfPossible(true).then((started) => {
+    if (!started) armAmbientGestureStart();
+  });
+}
 </script>
 
 <template>
@@ -362,8 +474,14 @@ onBeforeUnmount(() => {
         <span class="journey-ticket"></span>
       </div>
       <Transition name="screen-fade" mode="out-in">
+        <AuthView
+          v-if="!booting && routeName === 'auth'"
+          key="auth"
+          @authenticated="setAuthenticated"
+          @toast="showToast"
+        />
         <HomeView
-          v-if="routeName === 'home'"
+          v-else-if="routeName === 'home'"
           key="home"
           :criteria="criteria"
           :loading="loading"
@@ -408,6 +526,18 @@ onBeforeUnmount(() => {
           @remove="removeSaved"
           @update-note="updateNote"
         />
+        <ProfileView
+          v-else-if="routeName === 'profile'"
+          key="profile"
+          :user="authUser"
+          :saved="saved"
+          @navigate="navigate"
+          @save-profile="saveProfile"
+          @save-preferences="savePreferences"
+          @logout="logout"
+          @delete-account="removeAccount"
+          @toast="showToast"
+        />
       </Transition>
     </div>
     <button
@@ -421,7 +551,7 @@ onBeforeUnmount(() => {
       <IconGlyph name="sound" />
       <span>{{ ambientEnabled ? "Sound on" : "Sound" }}</span>
     </button>
-    <BottomNav v-if="!booting" :route="route" :saved-count="saved.length" @navigate="handleNavigate" />
+    <BottomNav v-if="!booting && authUser" :route="route" :saved-count="saved.length" :user="authUser" @navigate="handleNavigate" />
     <Toast :message="toastMessage" />
 
     <Transition name="splash-fade">

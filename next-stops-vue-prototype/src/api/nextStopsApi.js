@@ -2,20 +2,141 @@ const DATA_API_BASE = import.meta.env.VITE_NEXT_STOPS_API_BASE || "";
 const SAVED_KEY = "nextstops:vue-prototype:saved";
 const PLACE_CACHE_KEY = "nextstops:vue-prototype:places";
 const SESSION_KEY = "nextstops:vue-prototype:session";
+const AUTH_KEY = "nextstops:vue-prototype:auth";
 
 let placeCache = loadJson(PLACE_CACHE_KEY, []);
 
 async function fetchJson(base, path, options = {}) {
+  const auth = getStoredAuth();
   const response = await fetch(`${base}${path}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
+      ...(auth?.token ? { Authorization: `Bearer ${auth.token}` } : {}),
       ...(options.headers || {}),
     },
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || data.detail || `API 回傳 HTTP ${response.status}`);
   return data;
+}
+
+export function getStoredAuth() {
+  return loadJson(AUTH_KEY, null);
+}
+
+export function setStoredAuth(auth) {
+  if (!auth) {
+    localStorage.removeItem(AUTH_KEY);
+    return null;
+  }
+  localStorage.setItem(AUTH_KEY, JSON.stringify(auth));
+  if (auth.user?.session_id) localStorage.setItem(SESSION_KEY, auth.user.session_id);
+  return auth;
+}
+
+export function clearStoredAuth() {
+  localStorage.removeItem(AUTH_KEY);
+}
+
+export function startGuestSession() {
+  const sessionId = getOrCreateAnonymousSession();
+  const auth = {
+    mode: "guest",
+    token: "",
+    user: {
+      id: sessionId,
+      provider: "guest",
+      name: "訪客",
+      account: "guest",
+      email: "",
+      avatar_url: "",
+      session_id: sessionId,
+      preferences: {},
+    },
+  };
+  return setStoredAuth(auth);
+}
+
+export async function getAuthConfig() {
+  return fetchJson(DATA_API_BASE, "/api/auth/config");
+}
+
+export async function registerAccount(payload) {
+  return fetchJson(DATA_API_BASE, "/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function loginAccount(payload) {
+  const auth = await fetchJson(DATA_API_BASE, "/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return setStoredAuth({ mode: "account", ...auth });
+}
+
+export async function loginWithGoogleCredential(credential) {
+  const auth = await fetchJson(DATA_API_BASE, "/api/auth/google", {
+    method: "POST",
+    body: JSON.stringify({ id_token: credential }),
+  });
+  return setStoredAuth({ mode: "google", ...auth });
+}
+
+export async function getCurrentUser() {
+  const auth = getStoredAuth();
+  if (!auth?.token) return auth?.user ? { user: auth.user } : null;
+  const data = await fetchJson(DATA_API_BASE, "/api/auth/me");
+  setStoredAuth({ ...auth, user: data.user });
+  return data;
+}
+
+export async function updateUserPreferences(preferences) {
+  const auth = getStoredAuth();
+  if (!auth?.token) {
+    const next = { ...(auth || startGuestSession()), user: { ...(auth?.user || {}), preferences } };
+    setStoredAuth(next);
+    return next.user;
+  }
+  const data = await fetchJson(DATA_API_BASE, "/api/auth/preferences", {
+    method: "PATCH",
+    body: JSON.stringify(preferences),
+  });
+  setStoredAuth({ ...auth, user: data.user });
+  return data.user;
+}
+
+export async function updateUserProfile(profile) {
+  const auth = getStoredAuth();
+  const cleanProfile = {
+    name: String(profile?.name || "").trim(),
+    avatar_url: String(profile?.avatar_url || "").trim(),
+  };
+  if (!auth?.token) {
+    throw new Error("訪客模式不能編輯個人資料");
+  }
+  const data = await fetchJson(DATA_API_BASE, "/api/auth/profile", {
+    method: "PATCH",
+    body: JSON.stringify(cleanProfile),
+  });
+  setStoredAuth({ ...auth, user: data.user });
+  return data.user;
+}
+
+export async function logoutAccount() {
+  try {
+    await fetchJson(DATA_API_BASE, "/api/auth/logout", { method: "POST" });
+  } catch {
+    // Local logout should still proceed if the API is offline.
+  }
+  clearStoredAuth();
+}
+
+export async function deleteAccount() {
+  await fetchJson(DATA_API_BASE, "/api/auth/account", { method: "DELETE" });
+  clearStoredAuth();
 }
 
 export async function getRecommendations(criteria) {
@@ -287,6 +408,12 @@ function routeHintFromTransport(transport) {
 }
 
 function getSessionId() {
+  const auth = getStoredAuth();
+  if (auth?.user?.session_id) return auth.user.session_id;
+  return getOrCreateAnonymousSession();
+}
+
+function getOrCreateAnonymousSession() {
   const existing = localStorage.getItem(SESSION_KEY);
   if (existing) return existing;
   const id = globalThis.crypto?.randomUUID

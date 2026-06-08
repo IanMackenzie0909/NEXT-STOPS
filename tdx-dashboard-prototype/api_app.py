@@ -7,10 +7,13 @@ Run from this directory:
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import hmac
 import json
 import math
 import os
 import re
+import secrets
 import sqlite3
 import sys
 import threading
@@ -23,7 +26,7 @@ from typing import Any
 import requests
 
 try:
-    from fastapi import Body, FastAPI, HTTPException, Query
+    from fastapi import Body, FastAPI, Header, HTTPException, Query
     from fastapi.middleware.cors import CORSMiddleware
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("請先安裝 FastAPI dependencies：pip install -r requirements.txt") from exc
@@ -39,6 +42,7 @@ GOOGLE_ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 GOOGLE_GEOCODING_URL = "https://maps.googleapis.com/maps/api/geocode/json"
 GOOGLE_PLACE_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
 GOOGLE_FIND_PLACE_URL = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"
+GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 DEFAULT_MAPBOX_TOKEN = "your_mapbox_access_token"
 MAX_STATION_RESULTS = 300
 TDX_REQUEST_RETRIES = 2
@@ -146,6 +150,10 @@ class TransitModeMismatchError(RuntimeError):
 
 class RouteUnavailableError(RuntimeError):
     """Raised when a route provider confirms that the requested mode has no route."""
+
+
+PASSWORD_PATTERN = re.compile(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$_-])[A-Za-z\d@$_-]{8,16}$")
+
 
 FEEDBACK_WEIGHT_RULES = {
     "too_far": {"distance": 0.16},
@@ -347,6 +355,123 @@ def get_google_maps_key() -> str:
 
 def get_mapbox_token() -> str:
     return env_first("MAPBOX_ACCESS_TOKEN", default=DEFAULT_MAPBOX_TOKEN)
+
+
+def public_user(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    get_value = row.get if isinstance(row, dict) else row.__getitem__
+    try:
+        preferences = json.loads(get_value("preferences_json") or "{}")
+    except Exception:
+        preferences = {}
+    return {
+        "id": get_value("id"),
+        "provider": get_value("provider"),
+        "account": get_value("account"),
+        "email": get_value("email"),
+        "name": get_value("display_name") or get_value("account") or get_value("email"),
+        "avatar_url": get_value("avatar_url"),
+        "session_id": f"user:{get_value('id')}",
+        "preferences": preferences,
+    }
+
+
+def clean_password(value: object) -> str:
+    return str(value or "").rstrip()
+
+
+def validate_password(account: str, password: str, confirm: str | None = None) -> None:
+    if confirm is not None and password != clean_password(confirm):
+        raise ValueError("兩次輸入的密碼不一致")
+    if account and account == password:
+        raise ValueError("帳號與密碼不可相同")
+    if re.search(r"\s", password):
+        raise ValueError("密碼開頭與中間不得包含空白字元")
+    if not PASSWORD_PATTERN.match(password):
+        raise ValueError("密碼需為 8-16 字元，包含大小寫英文字母、數字，且至少一個 @、$、_ 或 -")
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 180000)
+    return f"pbkdf2_sha256$180000${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored_hash: str | None) -> bool:
+    if not stored_hash:
+        return False
+    try:
+        algorithm, iterations, salt_hex, digest_hex = stored_hash.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        expected = bytes.fromhex(digest_hex)
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), int(iterations))
+        return hmac.compare_digest(digest, expected)
+    except Exception:
+        return False
+
+
+def create_auth_session(user_id: str) -> str:
+    init_recommendation_db()
+    token = secrets.token_urlsafe(40)
+    now = now_iso()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.execute(
+            "INSERT INTO auth_sessions (token, user_id, created_at, last_seen) VALUES (?, ?, ?, ?)",
+            (token, user_id, now, now),
+        )
+    return token
+
+
+def auth_response(user_row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    user = public_user(user_row)
+    return {"token": create_auth_session(user["id"]), "user": user}
+
+
+def bearer_token(authorization: str | None) -> str:
+    text = str(authorization or "").strip()
+    return text[7:].strip() if text.lower().startswith("bearer ") else text
+
+
+def current_user_from_token(token: str) -> dict[str, Any] | None:
+    token = bearer_token(token)
+    if not token:
+        return None
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        row = db.execute(
+            """
+            SELECT users.*
+            FROM auth_sessions
+            JOIN users ON users.id = auth_sessions.user_id
+            WHERE auth_sessions.token = ?
+            """,
+            (token,),
+        ).fetchone()
+        if row:
+            db.execute("UPDATE auth_sessions SET last_seen = ? WHERE token = ?", (now_iso(), token))
+    return public_user(row) if row else None
+
+
+def require_current_user(authorization: str | None) -> dict[str, Any]:
+    user = current_user_from_token(authorization or "")
+    if not user:
+        raise HTTPException(status_code=401, detail="請先登入")
+    return user
+
+
+def verify_google_id_token(id_token: str) -> dict[str, Any]:
+    client_id = os.getenv("GOOGLE_CLIENT_ID") or os.getenv("VITE_GOOGLE_CLIENT_ID")
+    if not client_id:
+        raise ValueError("GOOGLE_CLIENT_ID 尚未設定")
+    response = requests.get(GOOGLE_TOKENINFO_URL, params={"id_token": id_token}, timeout=10)
+    response.raise_for_status()
+    info = response.json()
+    if info.get("aud") != client_id:
+        raise ValueError("Google token audience 不符合目前應用程式")
+    if info.get("email_verified") not in {True, "true", "True", "1", 1}:
+        raise ValueError("Google 帳戶尚未完成 email 驗證")
+    return info
 
 
 def decode_polyline(polyline: str) -> list[list[float]]:
@@ -1227,6 +1352,37 @@ def init_recommendation_db() -> None:
             )
             """
         )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                account TEXT UNIQUE,
+                email TEXT,
+                display_name TEXT NOT NULL,
+                avatar_url TEXT,
+                password_hash TEXT,
+                google_sub TEXT UNIQUE,
+                preferences_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_account ON users(account) WHERE account IS NOT NULL")
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL")
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auth_sessions (
+                token TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+            """
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id)")
 
 
 def record_recommendation(
@@ -1437,6 +1593,164 @@ def record_feedback(payload: dict[str, Any]) -> dict[str, Any]:
         )
     signals = build_session_preference_signals(session_id)
     return {"ok": True, "id": cursor.lastrowid, "signals": signals}
+
+
+def register_platform_user(payload: dict[str, Any]) -> dict[str, Any]:
+    name = str(payload.get("name") or "").strip()
+    account = str(payload.get("account") or "").strip()
+    password = clean_password(payload.get("password"))
+    confirm = clean_password(payload.get("confirm_password"))
+    if not name:
+        raise ValueError("名稱為必填")
+    if not account:
+        raise ValueError("帳號為必填")
+    validate_password(account, password, confirm)
+
+    init_recommendation_db()
+    user_id = uuid.uuid4().hex
+    now = now_iso()
+    try:
+        with sqlite3.connect(RECOMMENDATION_DB) as db:
+            db.row_factory = sqlite3.Row
+            db.execute(
+                """
+                INSERT INTO users (
+                    id, provider, account, email, display_name, avatar_url, password_hash, google_sub,
+                    preferences_json, created_at, updated_at
+                ) VALUES (?, 'platform', ?, NULL, ?, NULL, ?, NULL, '{}', ?, ?)
+                """,
+                (user_id, account, name, hash_password(password), now, now),
+            )
+            row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("這個帳號已經被使用") from exc
+    return {"ok": True, "user": public_user(row)}
+
+
+def login_platform_user(payload: dict[str, Any]) -> dict[str, Any]:
+    account = str(payload.get("account") or "").strip()
+    password = clean_password(payload.get("password"))
+    if not account or not password:
+        raise ValueError("帳號與密碼為必填")
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        row = db.execute("SELECT * FROM users WHERE account = ? AND provider = 'platform'", (account,)).fetchone()
+    if row is None or not verify_password(password, row["password_hash"]):
+        raise ValueError("帳號或密碼錯誤")
+    return auth_response(row)
+
+
+def login_google_user(payload: dict[str, Any]) -> dict[str, Any]:
+    id_token = str(payload.get("id_token") or payload.get("credential") or "").strip()
+    if not id_token:
+        raise ValueError("Google ID token is required")
+    info = verify_google_id_token(id_token)
+    google_sub = str(info.get("sub") or "")
+    email = str(info.get("email") or "")
+    name = str(info.get("name") or email or "Google User")
+    avatar_url = str(info.get("picture") or "")
+    if not google_sub:
+        raise ValueError("Google token 缺少 sub")
+
+    init_recommendation_db()
+    now = now_iso()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        row = db.execute("SELECT * FROM users WHERE google_sub = ?", (google_sub,)).fetchone()
+        if row is None:
+            user_id = uuid.uuid4().hex
+            db.execute(
+                """
+                INSERT INTO users (
+                    id, provider, account, email, display_name, avatar_url, password_hash, google_sub,
+                    preferences_json, created_at, updated_at
+                ) VALUES (?, 'google', ?, ?, ?, ?, NULL, ?, '{}', ?, ?)
+                """,
+                (user_id, email or None, email or None, name, avatar_url or None, google_sub, now, now),
+            )
+            row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        else:
+            db.execute(
+                """
+                UPDATE users SET email = ?, display_name = ?, avatar_url = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (email or row["email"], row["display_name"] or name, row["avatar_url"] or avatar_url or None, now, row["id"]),
+            )
+            row = db.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone()
+    return auth_response(row)
+
+
+def update_user_preferences(user: dict[str, Any], preferences: dict[str, Any]) -> dict[str, Any]:
+    allowed_weights = {"mood", "distance", "weather", "aqi", "budget", "category", "quality", "environment"}
+    raw_weights = preferences.get("weightAdjustments") or preferences.get("weight_adjustments") or {}
+    weights = {}
+    for key, value in raw_weights.items():
+        if key in allowed_weights:
+            weights[key] = max(0.5, min(1.6, float(value)))
+    clean_preferences = {"weightAdjustments": weights}
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        db.execute(
+            "UPDATE users SET preferences_json = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(clean_preferences, ensure_ascii=False), now_iso(), user["id"]),
+        )
+        row = db.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+    return public_user(row)
+
+
+def update_user_profile(user: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    name = str(payload.get("name") or "").strip()
+    avatar_url = str(payload.get("avatar_url") or "").strip()
+    if not name:
+        raise ValueError("名稱為必填")
+    if len(name) > 40:
+        raise ValueError("名稱最多 40 個字元")
+    if len(avatar_url) > 800000:
+        raise ValueError("頭像圖片過大，請選擇較小的圖片")
+    if avatar_url and not (avatar_url.startswith("data:image/") or avatar_url.startswith("https://")):
+        raise ValueError("頭像格式不支援")
+
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        db.row_factory = sqlite3.Row
+        db.execute(
+            "UPDATE users SET display_name = ?, avatar_url = ?, updated_at = ? WHERE id = ?",
+            (name, avatar_url or None, now_iso(), user["id"]),
+        )
+        row = db.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
+    return public_user(row)
+
+
+def logout_auth_session(token: str) -> dict[str, Any]:
+    token = bearer_token(token)
+    if token:
+        init_recommendation_db()
+        with sqlite3.connect(RECOMMENDATION_DB) as db:
+            db.execute("DELETE FROM auth_sessions WHERE token = ?", (token,))
+    return {"ok": True}
+
+
+def delete_user_account(user: dict[str, Any]) -> dict[str, Any]:
+    session_id = user["session_id"]
+    init_recommendation_db()
+    with sqlite3.connect(RECOMMENDATION_DB) as db:
+        request_ids = [
+            row[0]
+            for row in db.execute("SELECT id FROM recommendation_requests WHERE session_id = ?", (session_id,)).fetchall()
+        ]
+        if request_ids:
+            placeholders = ",".join("?" for _ in request_ids)
+            db.execute(f"DELETE FROM recommendation_results WHERE request_id IN ({placeholders})", request_ids)
+        db.execute("DELETE FROM recommendation_requests WHERE session_id = ?", (session_id,))
+        db.execute("DELETE FROM saved_places WHERE session_id = ?", (session_id,))
+        db.execute("DELETE FROM recommendation_feedback WHERE session_id = ?", (session_id,))
+        db.execute("DELETE FROM user_preference_signals WHERE session_id = ?", (session_id,))
+        db.execute("DELETE FROM auth_sessions WHERE user_id = ?", (user["id"],))
+        db.execute("DELETE FROM users WHERE id = ?", (user["id"],))
+    return {"ok": True, "deleted_user_id": user["id"]}
 
 
 def _safe_json_loads(value: str | None, fallback: Any) -> Any:
@@ -2154,6 +2468,58 @@ def mapbox_config():
     if not token or token == DEFAULT_MAPBOX_TOKEN:
         return {"access_token": "", "configured": False}
     return {"access_token": token, "configured": True}
+
+
+@app.get("/api/auth/config")
+def auth_config():
+    client_id = os.getenv("VITE_GOOGLE_CLIENT_ID") or os.getenv("GOOGLE_CLIENT_ID") or ""
+    return {"google_client_id": client_id, "google_enabled": bool(client_id)}
+
+
+@app.post("/api/auth/register")
+def api_auth_register(payload: dict[str, Any] | None = Body(default=None)):
+    return run_or_raise(lambda: register_platform_user(payload or {}))
+
+
+@app.post("/api/auth/login")
+def api_auth_login(payload: dict[str, Any] | None = Body(default=None)):
+    return run_or_raise(lambda: login_platform_user(payload or {}))
+
+
+@app.post("/api/auth/google")
+def api_auth_google(payload: dict[str, Any] | None = Body(default=None)):
+    return run_or_raise(lambda: login_google_user(payload or {}))
+
+
+@app.get("/api/auth/me")
+def api_auth_me(authorization: str | None = Header(default=None)):
+    user = require_current_user(authorization)
+    return {"user": user}
+
+
+@app.patch("/api/auth/preferences")
+def api_auth_preferences(payload: dict[str, Any] | None = Body(default=None), authorization: str | None = Header(default=None)):
+    user = require_current_user(authorization)
+    updated = run_or_raise(lambda: update_user_preferences(user, payload or {}))
+    return {"user": updated}
+
+
+@app.patch("/api/auth/profile")
+def api_auth_profile(payload: dict[str, Any] | None = Body(default=None), authorization: str | None = Header(default=None)):
+    user = require_current_user(authorization)
+    updated = run_or_raise(lambda: update_user_profile(user, payload or {}))
+    return {"user": updated}
+
+
+@app.post("/api/auth/logout")
+def api_auth_logout(authorization: str | None = Header(default=None)):
+    return run_or_raise(lambda: logout_auth_session(authorization or ""))
+
+
+@app.delete("/api/auth/account")
+def api_auth_delete_account(authorization: str | None = Header(default=None)):
+    user = require_current_user(authorization)
+    return run_or_raise(lambda: delete_user_account(user))
 
 
 @app.post("/api/route")
