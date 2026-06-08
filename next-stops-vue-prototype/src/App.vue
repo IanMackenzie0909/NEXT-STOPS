@@ -10,8 +10,8 @@ import IconGlyph from "./components/IconGlyph.vue";
 import { deleteSavedPlace, getRecommendations, getSavedPlaces, savePlace, submitRecommendationFeedback, updateSavedPlace } from "./api/nextStopsApi";
 import { LOCATION_FALLBACK_LABEL } from "./constants";
 import appIconImage from "./assets/APP_ICON.png";
-import bgmTimeToTime from "../BGM/ES_Time to Time - Helmut Schenker.wav";
-import bgmSoftWeight from "../BGM/ES_Soft Weight of Slow Desire - Jay Taylor.wav";
+import bgmTimeToTime from "../BGM/ES_Time to Time - Helmut Schenker.mp3";
+import bgmSoftWeight from "../BGM/ES_Soft Weight of Slow Desire - Jay Taylor.mp3";
 
 const AMBIENT_VOLUME = 0.34;
 const AMBIENT_FADE_MS = 1400;

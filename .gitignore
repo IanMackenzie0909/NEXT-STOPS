@@ -39,6 +39,9 @@ index-mapbox-sample.html
 neglectedfiles/
 *.bat
 
+# Keep original high-size audio masters out of Git.
+next-stops-vue-prototype/BGM/*.wav
+
 # Local API caches and generated prototype data
 tdx-dashboard-prototype/taipei_attraction_search_platform/data/
 *.sqlite
