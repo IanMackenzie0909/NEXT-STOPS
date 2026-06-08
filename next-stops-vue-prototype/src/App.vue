@@ -49,6 +49,8 @@ let ambientFadeFrame;
 let ambientFadeStartedAt = 0;
 let ambientFadeFrom = 0;
 let ambientFadeTo = 0;
+let ambientGestureArmed = false;
+let ambientGestureStartHandler;
 
 watch(booting, (isBooting) => {
   document.body.classList.toggle("startup-active", isBooting);
@@ -222,12 +224,8 @@ async function toggleAmbient() {
     stopAmbient();
     return;
   }
-  try {
-    await startAmbient();
-    ambientEnabled.value = true;
-  } catch (error) {
-    showToast(`音景無法啟用：${error.message}`);
-  }
+  const started = await startAmbientIfPossible(false);
+  if (!started) armAmbientGestureStart();
 }
 
 function ensureAmbientAudio() {
@@ -245,6 +243,42 @@ async function startAmbient() {
   if (!ambientTracks.length) throw new Error("找不到背景音樂檔案");
   if (audio.paused) await audio.play();
   fadeAmbientVolume(AMBIENT_VOLUME, AMBIENT_FADE_MS);
+}
+
+async function startAmbientIfPossible(silent = true) {
+  if (ambientEnabled.value) return true;
+  try {
+    await startAmbient();
+    ambientEnabled.value = true;
+    ambientGestureArmed = false;
+    removeAmbientGestureStart();
+    return true;
+  } catch (error) {
+    if (!silent) showToast(`音景無法啟用：${error.message}`);
+    return false;
+  }
+}
+
+function armAmbientGestureStart() {
+  if (ambientGestureArmed || ambientEnabled.value) return;
+  ambientGestureArmed = true;
+  ambientGestureStartHandler = async () => {
+    ambientGestureArmed = false;
+    removeAmbientGestureStart();
+    await startAmbientIfPossible(true);
+  };
+  document.addEventListener("pointerdown", ambientGestureStartHandler, { once: true, passive: true });
+  document.addEventListener("touchstart", ambientGestureStartHandler, { once: true, passive: true });
+  document.addEventListener("keydown", ambientGestureStartHandler, { once: true });
+}
+
+function removeAmbientGestureStart() {
+  if (!ambientGestureStartHandler) return;
+  document.removeEventListener("pointerdown", ambientGestureStartHandler);
+  document.removeEventListener("touchstart", ambientGestureStartHandler);
+  document.removeEventListener("keydown", ambientGestureStartHandler);
+  ambientGestureStartHandler = null;
+  ambientGestureArmed = false;
 }
 
 function playNextAmbientTrack() {
@@ -296,6 +330,10 @@ onMounted(() => {
   window.addEventListener("hashchange", () => {
     route.value = window.location.hash.replace(/^#/, "") || "/";
   });
+  ensureAmbientAudio();
+  startAmbientIfPossible(true).then((started) => {
+    if (!started) armAmbientGestureStart();
+  });
   syncSaved();
   setTimeout(() => {
     navigate("/");
@@ -304,6 +342,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  removeAmbientGestureStart();
   stopAmbient({ immediate: true });
   document.body.classList.remove("startup-active");
 });
@@ -330,12 +369,10 @@ onBeforeUnmount(() => {
           :loading="loading"
           :locating="locating"
           :saved-count="saved.length"
-          :ambient-enabled="ambientEnabled"
           @update:criteria="updateCriteria"
           @locate="locateUser"
           @find="findStops"
           @navigate="handleNavigate"
-          @toggle-ambient="toggleAmbient"
         />
         <ResultsView
           v-else-if="routeName === 'results'"
@@ -374,7 +411,7 @@ onBeforeUnmount(() => {
       </Transition>
     </div>
     <button
-      v-if="!booting && routeName !== 'home'"
+      v-if="!booting"
       class="ambient-toggle"
       :class="{ active: ambientEnabled }"
       type="button"

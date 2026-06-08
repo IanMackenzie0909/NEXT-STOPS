@@ -1,7 +1,6 @@
 <script setup>
 import { computed, ref } from "vue";
 import AppIcon from "./AppIcon.vue";
-import IconGlyph from "./IconGlyph.vue";
 import TransportIcon from "./TransportIcon.vue";
 import { BUDGET_LABELS, LOCATION_FALLBACK_LABEL, MOODS, TRANSPORT_MODES, WEATHER_LABELS } from "../constants";
 import { formatTime } from "../utils/formatters";
@@ -11,9 +10,8 @@ const props = defineProps({
   loading: { type: Boolean, default: false },
   locating: { type: Boolean, default: false },
   savedCount: { type: Number, default: 0 },
-  ambientEnabled: { type: Boolean, default: false },
 });
-const emit = defineEmits(["update:criteria", "find", "locate", "navigate", "toggle-ambient"]);
+const emit = defineEmits(["update:criteria", "find", "locate", "navigate"]);
 const openSelect = ref("");
 
 const locationText = computed(() => {
@@ -56,9 +54,6 @@ function toggleTransport(modeId) {
         <p class="muted">Good morning</p>
         <h1>Where to next?</h1>
       </div>
-      <button class="icon-button sound-button" :class="{ active: ambientEnabled }" type="button" title="Ambient sound" @click="emit('toggle-ambient')">
-        <IconGlyph name="sound" />
-      </button>
     </header>
 
     <section class="choice-panel">

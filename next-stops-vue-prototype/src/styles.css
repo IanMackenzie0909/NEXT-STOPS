@@ -519,15 +519,6 @@ h2 {
   font-size: 1.7rem;
 }
 
-.sound-button.active {
-  background: rgba(229, 243, 234, 0.92);
-  color: var(--wellness);
-}
-
-.sound-button .icon-glyph {
-  font-size: 1rem;
-}
-
 .ambient-toggle {
   position: fixed;
   left: 28px;
@@ -1281,6 +1272,10 @@ textarea {
   line-height: 1.55;
 }
 
+.map-route-status:has(.commute-inline .transport-icon-img) {
+  border: 1px solid rgba(226, 232, 240, 0.72);
+}
+
 .commute-inline {
   display: inline-flex;
   align-items: center;
@@ -1295,6 +1290,12 @@ textarea {
 .commute-inline .transport-icon-img {
   width: 24px;
   height: 24px;
+}
+
+.commute-chip.unavailable,
+.route-option-chip.unavailable {
+  background: rgba(105, 115, 134, 0.1);
+  color: #697386;
 }
 
 .route-marker {
@@ -1643,6 +1644,53 @@ textarea {
   font-size: 0.78rem;
   font-weight: 800;
   line-height: 1.35;
+}
+
+.route-option-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.route-option-chip {
+  display: inline-grid;
+  grid-template-columns: auto auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  column-gap: 7px;
+  row-gap: 1px;
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid rgba(226, 232, 240, 0.86);
+  border-radius: 15px;
+  background: rgba(248, 250, 252, 0.84);
+  color: var(--muted);
+}
+
+.route-option-chip.selected {
+  border-color: rgba(99, 102, 241, 0.26);
+  background: rgba(99, 102, 241, 0.09);
+  color: var(--indigo);
+}
+
+.route-option-chip .transport-icon-img {
+  grid-row: 1 / 3;
+  width: 22px;
+  height: 22px;
+}
+
+.route-option-chip strong {
+  color: inherit;
+  font-size: 0.78rem;
+  line-height: 1.05;
+}
+
+.route-option-chip small {
+  color: inherit;
+  font-size: 0.7rem;
+  font-weight: 900;
+  opacity: 0.78;
 }
 
 .backup-list {

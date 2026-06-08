@@ -172,7 +172,7 @@ export function googleDirectionsUrl(origin, destination, mode = "TRANSIT") {
     WALKING: "walking",
     DRIVING: "driving",
     CAR: "driving",
-    MOTORCYCLE: "driving",
+    MOTORCYCLE: "two-wheeler",
     BICYCLE: "bicycling",
   }[mode] || "transit";
   const params = new URLSearchParams({
@@ -269,6 +269,7 @@ function labelCategory(value) {
     taipei_featured: "精選景點",
     museum: "博物館",
     gallery: "藝文",
+    venue: "場館",
     viewpoint: "景觀",
     restaurant: "餐飲",
     market: "市集",
@@ -305,7 +306,7 @@ function inferWeatherStatus(categories) {
 function inferBudget(categories) {
   const text = categories.join(" ");
   if (/公園|河濱|古蹟|taipei_featured/.test(text)) return "low";
-  if (/餐廳|商圈|restaurant/.test(text)) return "flexible";
+  if (/餐廳|restaurant/.test(text)) return "high";
   return "medium";
 }
 

@@ -24,6 +24,20 @@ const descriptionExpanded = ref(false);
 const travelTime = computed(() => place.value?.matched_travel_time ?? place.value?.travel_time_minutes ?? 0);
 const commute = computed(() => routeData.value?.best || place.value?.commute || null);
 const commuteInfo = computed(() => commuteParts(commute.value, travelTime.value));
+const routeOptions = computed(() => (
+  Array.isArray(routeData.value?.options)
+    ? routeData.value.options.filter((option) => option?.mode)
+    : []
+));
+const openingSourceText = computed(() => {
+  const source = place.value?.opening_status_source;
+  if (place.value?.open_now === true || place.value?.open_now === false) {
+    if (source === "google_places") return "Google Places 已確認";
+    if (source === "opening_hours") return "景點資料已確認";
+    return "即時資料已確認";
+  }
+  return "資料來源不足，請以 Google Maps 為準";
+});
 const transitSummary = computed(() => {
   const transit = commute.value?.transit;
   if (!transit) return "";
@@ -77,6 +91,23 @@ function clearMapRoute() {
   if (map.getSource("route")) map.removeSource("route");
 }
 
+function ensureMarkers(startLngLat, endLngLat) {
+  if (!originMarker) {
+    originMarker = new globalThis.mapboxgl.Marker({ element: markerElement("你", "origin"), anchor: "bottom" })
+      .setLngLat(startLngLat)
+      .addTo(map);
+  } else {
+    originMarker.setLngLat(startLngLat);
+  }
+  if (!destinationMarker) {
+    destinationMarker = new globalThis.mapboxgl.Marker({ element: markerElement("到", "destination"), anchor: "bottom" })
+      .setLngLat(endLngLat)
+      .addTo(map);
+  } else {
+    destinationMarker.setLngLat(endLngLat);
+  }
+}
+
 function markerElement(label, kind) {
   const el = document.createElement("div");
   el.className = `route-marker ${kind}`;
@@ -85,22 +116,38 @@ function markerElement(label, kind) {
 }
 
 function renderMapRoute(route) {
-  if (!map || !route?.geometry?.coordinates?.length) return;
+  if (!map || !route) {
+    mapStatus.value = "路線資料尚未就緒";
+    return;
+  }
   const start = route.origin;
   const end = route.destination;
   const startLngLat = lngLatFromPoint(start);
   const endLngLat = lngLatFromPoint(end);
-  const coordinates = route.geometry.coordinates.map(lngLatFromCoordinate).filter(Boolean);
   if (!startLngLat || !endLngLat) {
     mapStatus.value = "路線座標格式錯誤";
     return;
   }
+  clearMapRoute();
+
+  if (route?.available === false || !route?.geometry?.coordinates?.length) {
+    ensureMarkers(startLngLat, endLngLat);
+    const bounds = new globalThis.mapboxgl.LngLatBounds();
+    bounds.extend(startLngLat);
+    bounds.extend(endLngLat);
+    map.fitBounds(bounds, { padding: 64, maxZoom: 14.5, pitch: 0, bearing: 0 });
+    mapStatus.value = route?.available === false
+      ? "所選交通方式沒有有效路線，請調整交通方式或用 Google Maps 查看替代方案"
+      : "尚未取得路線線段，已標示起點與目的地";
+    return;
+  }
+
+  const coordinates = route.geometry.coordinates.map(lngLatFromCoordinate).filter(Boolean);
   if (coordinates.length < 2) {
     mapStatus.value = "路線 geometry 格式錯誤";
     return;
   }
 
-  clearMapRoute();
   map.addSource("route", {
     type: "geojson",
     data: {
@@ -131,26 +178,14 @@ function renderMapRoute(route) {
     paint: { "line-color": "#d49a3a", "line-width": 2.5, "line-dasharray": [0.4, 2.4] },
   });
 
-  if (!originMarker) {
-    originMarker = new globalThis.mapboxgl.Marker({ element: markerElement("你", "origin"), anchor: "bottom" })
-      .setLngLat(startLngLat)
-      .addTo(map);
-  } else {
-    originMarker.setLngLat(startLngLat);
-  }
-  if (!destinationMarker) {
-    destinationMarker = new globalThis.mapboxgl.Marker({ element: markerElement("到", "destination"), anchor: "bottom" })
-      .setLngLat(endLngLat)
-      .addTo(map);
-  } else {
-    destinationMarker.setLngLat(endLngLat);
-  }
+  ensureMarkers(startLngLat, endLngLat);
 
   const bounds = new globalThis.mapboxgl.LngLatBounds();
   for (const coord of coordinates) bounds.extend(coord);
   bounds.extend(startLngLat);
   bounds.extend(endLngLat);
-  map.fitBounds(bounds, { padding: 58, maxZoom: 15.5 });
+  map.fitBounds(bounds, { padding: 58, maxZoom: 15.5, pitch: 0, bearing: 0 });
+  mapStatus.value = "已依最短通勤時間繪製路線";
 }
 
 async function loadRouteMap() {
@@ -186,15 +221,19 @@ async function loadRouteMap() {
         style: "mapbox://styles/mapbox/standard",
         center: [destination.value.lon, destination.value.lat],
         zoom: 13,
-        pitch: 46,
-        bearing: 18,
-        antialias: true,
+        pitch: 0,
+        bearing: 0,
+        dragRotate: false,
+        pitchWithRotate: false,
+        antialias: false,
         cooperativeGestures: true,
       });
-      map.addControl(new globalThis.mapboxgl.NavigationControl({ visualizePitch: true }), "top-right");
+      map.touchZoomRotate.disableRotation();
+      map.addControl(new globalThis.mapboxgl.NavigationControl({ visualizePitch: false, showCompass: false }), "top-right");
       await new Promise((resolve) => map.on("load", resolve));
       if (typeof map.setConfigProperty === "function") {
         try {
+          map.setConfigProperty("basemap", "show3dObjects", false);
           map.setConfigProperty("basemap", "showTransitLabels", true);
           map.setConfigProperty("basemap", "showPointOfInterestLabels", true);
         } catch {
@@ -203,7 +242,6 @@ async function loadRouteMap() {
       }
     }
     renderMapRoute(routeData.value.best);
-    mapStatus.value = "已依最短通勤時間繪製路線";
   } catch (error) {
     mapStatus.value = `地圖無法載入：${error.message}`;
   }
@@ -273,7 +311,7 @@ watch(() => props.placeId, () => {
             {{ descriptionExpanded ? "收合說明" : "展開完整說明" }}
           </button>
           <div class="detail-info-grid">
-            <span class="info-chip commute-chip">
+            <span class="info-chip commute-chip" :class="{ unavailable: commuteInfo.unavailable }">
               <TransportIcon :name="commuteInfo.icon" :label="commuteInfo.mode" />
               <strong>{{ commuteInfo.duration }}</strong>
               <small>通勤時間</small>
@@ -282,7 +320,7 @@ watch(() => props.placeId, () => {
             <span class="info-chip status-chip">
               <IconGlyph name="spark" />
               <strong>{{ openingLabel(place) }}</strong>
-              <small>營業狀態</small>
+              <small>{{ openingSourceText }}</small>
             </span>
             <span><strong>{{ place.score }}%</strong><small>Match</small></span>
           </div>
@@ -305,6 +343,18 @@ watch(() => props.placeId, () => {
             <strong>Route</strong>
             <span>{{ place.route_hint }}</span>
             <small v-if="transitSummary" class="route-subhint">{{ transitSummary }}</small>
+            <div v-if="routeOptions.length > 1" class="route-option-list" aria-label="交通方式比較">
+              <span
+                v-for="option in routeOptions"
+                :key="option.mode"
+                class="route-option-chip"
+                :class="{ unavailable: option.available === false, selected: option.mode === commute?.mode }"
+              >
+                <TransportIcon :name="option.mode" :label="option.mode_label" />
+                <strong>{{ option.mode_label }}</strong>
+                <small>{{ option.available === false ? "不可用" : option.duration_text }}</small>
+              </span>
+            </div>
           </div>
           <div><strong>Start</strong><span>{{ criteria.locationLabel || LOCATION_FALLBACK_LABEL }}</span></div>
         </section>

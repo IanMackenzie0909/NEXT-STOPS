@@ -7,11 +7,15 @@ export function formatTime(minutes) {
 }
 
 export function commuteParts(commute, fallbackMinutes = 0) {
-  const duration = commute?.duration_text || (fallbackMinutes ? `${fallbackMinutes} 分鐘` : "時間待估");
+  const unavailable = commute?.available === false;
+  const duration = unavailable
+    ? "路線不可用"
+    : commute?.duration_text || (fallbackMinutes ? `${fallbackMinutes} 分鐘` : "時間待估");
   const mode = commute?.mode_label || "路線";
   return {
     duration,
     mode,
+    unavailable,
     icon: transportIcon(commute?.mode, mode),
   };
 }
@@ -118,6 +122,7 @@ export function suitabilityLabel(place) {
 
 export function budgetLabel(value) {
   if (value === "low") return "低消費";
+  if (value === "high") return "高消費";
   if (value === "flexible") return "預算彈性";
   return "中等消費";
 }

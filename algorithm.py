@@ -86,6 +86,7 @@ CATEGORIES = [
     "bookstore",
     "riverside",
     "gallery",
+    "venue",
     "restaurant",
     "viewpoint",
 ]
@@ -109,10 +110,10 @@ PRICE_ORDER = {
 
 PREFERRED_CATEGORIES_BY_MOOD = {
     "relax": {"park", "riverside", "cafe", "bookstore"},
-    "date": {"cafe", "gallery", "restaurant", "viewpoint"},
+    "date": {"cafe", "gallery", "venue", "restaurant", "viewpoint"},
     "solo": {"bookstore", "cafe", "museum", "riverside"},
-    "photo": {"viewpoint", "riverside", "gallery", "market"},
-    "night": {"restaurant", "viewpoint", "market", "riverside"},
+    "photo": {"viewpoint", "riverside", "gallery", "venue", "market"},
+    "night": {"restaurant", "viewpoint", "venue", "market", "riverside"},
 }
 
 SECONDARY_CATEGORIES_BY_MOOD = {

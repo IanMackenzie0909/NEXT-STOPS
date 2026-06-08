@@ -35,6 +35,7 @@ ATTRACTION_PLATFORM_ROOT = ROOT / "taipei_attraction_search_platform"
 ATTRACTION_CACHE = ATTRACTION_PLATFORM_ROOT / "data" / "taipei_places.json"
 RECOMMENDATION_DB = Path(os.getenv("NEXT_STOPS_DB_PATH", ROOT / "data" / "next_stops.sqlite3"))
 GOOGLE_DIRECTIONS_URL = "https://maps.googleapis.com/maps/api/directions/json"
+GOOGLE_ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 GOOGLE_GEOCODING_URL = "https://maps.googleapis.com/maps/api/geocode/json"
 GOOGLE_PLACE_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
 GOOGLE_FIND_PLACE_URL = "https://maps.googleapis.com/maps/api/place/findplacefromtext/json"
@@ -93,6 +94,7 @@ CATEGORY_LABELS = {
     "bookstore": "書店",
     "riverside": "河濱",
     "gallery": "藝文",
+    "venue": "場館",
     "restaurant": "餐飲",
     "viewpoint": "景觀",
     "scenic_spot": "景點",
@@ -111,6 +113,18 @@ COMMUTE_MODE_LABELS = {
     "DRIVING": "開車",
 }
 
+BUS_VEHICLE_TYPES = {"BUS", "INTERCITY_BUS", "TROLLEYBUS"}
+RAIL_VEHICLE_TYPES = {
+    "SUBWAY",
+    "METRO_RAIL",
+    "RAIL",
+    "HEAVY_RAIL",
+    "COMMUTER_TRAIN",
+    "HIGH_SPEED_TRAIN",
+    "TRAM",
+    "MONORAIL",
+}
+
 FRONTEND_TRANSPORT_TO_BACKEND = {
     "car": "CAR",
     "bus": "BUS",
@@ -124,6 +138,14 @@ FRONTEND_TRANSPORT_TO_BACKEND = {
 }
 
 OPENING_UNKNOWN_ALLOWED_CATEGORIES = {"park", "riverside", "viewpoint"}
+
+
+class TransitModeMismatchError(RuntimeError):
+    """Raised when Google returns a transit route that uses a different vehicle type."""
+
+
+class RouteUnavailableError(RuntimeError):
+    """Raised when a route provider confirms that the requested mode has no route."""
 
 FEEDBACK_WEIGHT_RULES = {
     "too_far": {"distance": 0.16},
@@ -380,13 +402,24 @@ def format_distance(meters: int | float | None) -> str:
     return f"{round(meters)} 公尺"
 
 
+def parse_google_duration_seconds(value: Any) -> int | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text.endswith("s"):
+        text = text[:-1]
+    try:
+        return max(1, round(float(text)))
+    except ValueError:
+        return None
+
+
 def google_route_params(mode: str) -> dict[str, str]:
     mapping = {
         "CAR": {"mode": "driving"},
         "DRIVING": {"mode": "driving"},
         "WALKING": {"mode": "walking"},
         "BICYCLE": {"mode": "bicycling"},
-        "MOTORCYCLE": {"mode": "two_wheeler"},
         "BUS": {"mode": "transit", "transit_mode": "bus"},
         "MRT": {"mode": "transit", "transit_mode": "subway|train"},
         "TRANSIT": {"mode": "transit"},
@@ -421,6 +454,7 @@ def transit_step_summary(leg: dict[str, Any]) -> dict[str, Any]:
             steps.append({
                 "type": "transit",
                 "line": line_name,
+                "vehicle_type": vehicle.get("type") or "",
                 "vehicle": vehicle.get("name") or "",
                 "departure_stop": (details.get("departure_stop") or {}).get("name", ""),
                 "arrival_stop": (details.get("arrival_stop") or {}).get("name", ""),
@@ -437,10 +471,97 @@ def transit_step_summary(leg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def validate_transit_route_for_mode(mode: str, leg: dict[str, Any]) -> None:
+    if mode not in {"BUS", "MRT"}:
+        return
+
+    allowed_types = BUS_VEHICLE_TYPES if mode == "BUS" else RAIL_VEHICLE_TYPES
+    transit_vehicle_types = []
+    for step in leg.get("steps") or []:
+        if step.get("travel_mode") != "TRANSIT":
+            continue
+        details = step.get("transit_details") or {}
+        line = details.get("line") or {}
+        vehicle = line.get("vehicle") or {}
+        vehicle_type = str(vehicle.get("type") or "").upper()
+        if vehicle_type:
+            transit_vehicle_types.append(vehicle_type)
+
+    if not transit_vehicle_types:
+        raise TransitModeMismatchError(f"Google returned no transit segment for {mode}")
+
+    invalid_types = sorted({vehicle_type for vehicle_type in transit_vehicle_types if vehicle_type not in allowed_types})
+    if invalid_types:
+        expected = "bus" if mode == "BUS" else "subway/train"
+        raise TransitModeMismatchError(
+            f"Google returned {', '.join(invalid_types)} segment for {mode}; expected {expected} only"
+        )
+
+
+def google_routes_two_wheeler(origin: dict[str, Any], destination: dict[str, Any], include_geometry: bool = False) -> dict[str, Any]:
+    key = get_google_maps_key()
+    if not key:
+        raise RuntimeError("Google Maps API key is not configured")
+
+    response = requests.post(
+        GOOGLE_ROUTES_URL,
+        headers={
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": key,
+            "X-Goog-FieldMask": "routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline,routes.description,routes.localizedValues",
+        },
+        json={
+            "origin": {"location": {"latLng": {"latitude": origin["lat"], "longitude": origin["lon"]}}},
+            "destination": {"location": {"latLng": {"latitude": destination["lat"], "longitude": destination["lon"]}}},
+            "travelMode": "TWO_WHEELER",
+            "languageCode": "zh-TW",
+            "regionCode": "TW",
+            "computeAlternativeRoutes": False,
+            "polylineEncoding": "ENCODED_POLYLINE",
+        },
+        timeout=10,
+    )
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        raise RouteUnavailableError(f"Google Routes two-wheeler unavailable: {exc}") from exc
+    payload = response.json()
+    routes = payload.get("routes") or []
+    if not routes:
+        raise RouteUnavailableError("Google Routes returned no two-wheeler route")
+
+    route = routes[0]
+    localized = route.get("localizedValues") or {}
+    duration_seconds = parse_google_duration_seconds(route.get("duration"))
+    distance_meters = route.get("distanceMeters")
+    result = {
+        "provider": "google_routes",
+        "mode": "MOTORCYCLE",
+        "mode_label": COMMUTE_MODE_LABELS["MOTORCYCLE"],
+        "distance_text": (localized.get("distance") or {}).get("text") or format_distance(distance_meters),
+        "distance_meters": distance_meters,
+        "duration_text": (localized.get("duration") or {}).get("text") or format_duration(duration_seconds),
+        "duration_seconds": duration_seconds,
+        "summary": route.get("description") or "two-wheeler route",
+        "origin": {"lat": origin["lat"], "lon": origin["lon"]},
+        "destination": {"lat": destination["lat"], "lon": destination["lon"]},
+        "notice": "Google two-wheeler routes can vary by region and may be beta quality.",
+    }
+    encoded = (route.get("polyline") or {}).get("encodedPolyline")
+    if include_geometry and encoded:
+        result["geometry"] = {
+            "type": "LineString",
+            "coordinates": decode_polyline(encoded),
+        }
+    return result
+
+
 def google_directions(origin: dict[str, Any], destination: dict[str, Any], mode: str, include_geometry: bool = False) -> dict[str, Any]:
     key = get_google_maps_key()
     if not key:
         raise RuntimeError("Google Maps API key is not configured")
+    if mode == "MOTORCYCLE":
+        return google_routes_two_wheeler(origin, destination, include_geometry=include_geometry)
 
     route_params = google_route_params(mode)
     response = requests.get(
@@ -459,10 +580,14 @@ def google_directions(origin: dict[str, Any], destination: dict[str, Any], mode:
     payload = response.json()
     status = payload.get("status")
     if status != "OK":
-        raise RuntimeError(payload.get("error_message") or status or "Google Directions failed")
+        message = payload.get("error_message") or status or "Google Directions failed"
+        if status in {"ZERO_RESULTS", "NOT_FOUND", "MAX_ROUTE_LENGTH_EXCEEDED"}:
+            raise RouteUnavailableError(message)
+        raise RuntimeError(message)
 
     route = payload["routes"][0]
     leg = route["legs"][0]
+    validate_transit_route_for_mode(mode, leg)
     result = {
         "provider": "google",
         "mode": mode,
@@ -743,6 +868,27 @@ def fallback_commute(origin: dict[str, Any], destination: dict[str, Any], mode: 
     return result
 
 
+def unavailable_commute(
+    origin: dict[str, Any],
+    destination: dict[str, Any],
+    mode: str,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "provider": "unavailable",
+        "available": False,
+        "mode": mode,
+        "mode_label": COMMUTE_MODE_LABELS.get(mode, mode),
+        "distance_text": "",
+        "distance_meters": None,
+        "duration_text": "路線不可用",
+        "duration_seconds": None,
+        "summary": reason,
+        "origin": {"lat": origin.get("lat"), "lon": origin.get("lon")},
+        "destination": {"lat": destination.get("lat"), "lon": destination.get("lon")},
+    }
+
+
 def normalize_transport_modes(value: Any) -> tuple[str, ...]:
     if value in (None, "", []):
         return ROUTE_COMPARE_MODES
@@ -772,13 +918,23 @@ def compare_commute_options(
     for mode in modes:
         try:
             option = google_directions(origin, destination, mode, include_geometry=include_geometry)
+        except (TransitModeMismatchError, RouteUnavailableError) as exc:
+            errors[mode] = str(exc)
+            option = unavailable_commute(origin, destination, mode, str(exc))
         except Exception as exc:
             errors[mode] = str(exc)
             option = fallback_commute(origin, destination, mode, include_geometry=include_geometry)
         options.append(option)
 
-    best = min(options, key=lambda item: item.get("duration_seconds") or 999999)
-    if include_geometry and "geometry" not in best:
+    best = min(
+        options,
+        key=lambda item: (
+            999999
+            if item.get("available") is False
+            else item.get("duration_seconds") or 999999
+        ),
+    )
+    if include_geometry and best.get("available") is not False and "geometry" not in best:
         best = {
             **best,
             **fallback_commute(origin, destination, best["mode"], include_geometry=True),
@@ -1430,7 +1586,7 @@ def budget_for_algorithm(value: object) -> str:
     budget = str(value or "medium")
     if budget == "low":
         return "low"
-    if budget in {"high", "flexible"}:
+    if budget == "high":
         return "high"
     return "medium"
 
@@ -1526,12 +1682,15 @@ def apply_preference_signals_to_candidates(candidates: list[dict[str, Any]], sig
 
 def primary_category(categories: list[str], text: str = "", name: str = "") -> str:
     name_blob = str(name or "").lower()
+    venue_pattern = r"大巨蛋|兩廳院|國家戲劇院|國家音樂廳|劇院|劇場|音樂廳|演藝廳|表演廳|文化中心|體育館|體育場|小巨蛋|arena|stadium|theater|theatre|concert hall|performing arts"
     if re.search(r"河濱|水岸|碼頭|渡口|riverside|river|pier|wharf|dock|waterfront", name_blob):
         return "riverside"
     if re.search(r"公園|森林|花園|步道|親山|登山|山系|park|trail", name_blob):
         return "park"
     if re.search(r"商圈|夜市|市場|market", name_blob):
         return "market"
+    if re.search(venue_pattern, name_blob):
+        return "venue"
     if re.search(r"書店|bookstore", name_blob):
         return "bookstore"
     if re.search(r"博物館|紀念館|museum", name_blob):
@@ -1551,6 +1710,7 @@ def primary_category(categories: list[str], text: str = "", name: str = "") -> s
 
     blob = " ".join([*(categories or []), text]).lower()
     checks = [
+        ("venue", venue_pattern),
         ("bookstore", r"書店|bookstore"),
         ("museum", r"博物館|紀念館|museum"),
         ("gallery", r"美術館|藝文|藝術|gallery|文創"),
@@ -1575,18 +1735,18 @@ def place_price(category: str, categories: list[str]) -> str:
     blob = " ".join([category, *(categories or [])])
     if re.search(r"公園|河濱|古蹟|park|riverside|taipei_featured", blob):
         return "low"
-    if re.search(r"餐廳|商圈|restaurant|market", blob):
+    if re.search(r"餐廳|restaurant", blob):
         return "high"
     return "medium"
 
 
 def display_budget_from_price(price: str) -> str:
-    return "flexible" if price == "high" else price
+    return price
 
 
 def place_environment(category: str, categories: list[str], text: str = "") -> tuple[bool, bool]:
     blob = " ".join([category, *(categories or []), text]).lower()
-    indoor_categories = {"museum", "gallery", "bookstore", "restaurant", "cafe"}
+    indoor_categories = {"museum", "gallery", "bookstore", "restaurant", "cafe", "venue"}
     outdoor_categories = {"park", "riverside", "viewpoint", "market"}
     strong_indoor_pattern = r"博物館|美術館|書店|餐廳|咖啡|咖啡館|文創|紀念館|展覽館|劇場|影城|會館|主題館|圖書館|商場|購物中心|旅館|飯店|寺|廟|宮|堂|museum|gallery|bookstore|restaurant|cafe|theater|mall|library"
     strong_outdoor_pattern = r"公園|森林|花園|河濱|水岸|碼頭|渡口|步道|親山|登山|山系|自行車道|廣場|露天|戶外|景觀|觀景|夜市|古蹟|park|riverside|river|pier|wharf|dock|waterfront|trail|outdoor"
@@ -1681,9 +1841,17 @@ def normalize_place_payload(raw: dict[str, Any], criteria: dict[str, Any], conte
     commute = None
     if destination["lat"] is not None and destination["lon"] is not None:
         commute = compare_commute_options(origin, destination, modes=normalize_transport_modes(criteria.get("transportModes")))
+    best_commute = commute["best"] if commute else None
+    best_duration_seconds = (
+        to_float(best_commute.get("duration_seconds"))
+        if best_commute and best_commute.get("available") is not False
+        else None
+    )
     travel_time = (
-        max(1, round(float(commute["best"]["duration_seconds"]) / 60))
-        if commute
+        max(1, round(best_duration_seconds / 60))
+        if best_duration_seconds is not None
+        else max(999, round(float(criteria.get("distance") or 30) + 999))
+        if best_commute and best_commute.get("available") is False
         else max(8, round(distance_m / 420)) if distance_m is not None else max(12, round(float(criteria.get("distance") or 30) * 0.8))
     )
     price = place_price(category, categories)
@@ -1725,7 +1893,7 @@ def normalize_place_payload(raw: dict[str, Any], criteria: dict[str, Any], conte
         "description": raw.get("description") or "資料來自台北景點搜尋平台，並由後端推薦引擎重新評分。",
         "matched_travel_time": travel_time,
         "travel_time_minutes": travel_time,
-        "commute": commute["best"] if commute else None,
+        "commute": best_commute,
         "commute_options": commute["options"] if commute else [],
         "budget": display_budget_from_price(price),
         "weather_status": "watch" if outdoor and rain_probability_from_context(context) >= 0.45 else "suitable" if indoor else "any",
@@ -1737,8 +1905,10 @@ def normalize_place_payload(raw: dict[str, Any], criteria: dict[str, Any], conte
         "opening_status_source": open_status.get("source"),
         "opening_status_detail": open_status.get("detail"),
         "route_hint": (
-            f"最快約 {commute['best']['duration_text']}，建議方式：{commute['best']['mode_label']}。"
-            if commute
+            "所選交通方式沒有有效路線；已排除作為主要推薦依據。"
+            if best_commute and best_commute.get("available") is False
+            else f"最快約 {best_commute['duration_text']}，建議方式：{best_commute['mode_label']}。"
+            if best_commute
             else "已納入距離與即時情境評分；實際路線請用地圖確認。"
         ),
         "rating": raw.get("rating") or round((3.8 + place.quality * 1.1) * 10) / 10,
