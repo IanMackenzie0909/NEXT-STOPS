@@ -8,13 +8,14 @@ let placeCache = loadJson(PLACE_CACHE_KEY, []);
 
 async function fetchJson(base, path, options = {}) {
   const auth = getStoredAuth();
+  const headers = {
+    ...(options.body ? { "Content-Type": "application/json" } : {}),
+    ...(auth?.token ? { Authorization: `Bearer ${auth.token}` } : {}),
+    ...(options.headers || {}),
+  };
   const response = await fetch(`${base}${path}`, {
     ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(auth?.token ? { Authorization: `Bearer ${auth.token}` } : {}),
-      ...(options.headers || {}),
-    },
+    headers,
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || data.detail || `API 回傳 HTTP ${response.status}`);
