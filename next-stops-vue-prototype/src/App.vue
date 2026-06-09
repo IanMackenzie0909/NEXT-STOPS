@@ -522,6 +522,7 @@ function handleVisibilityChange() {
           key="home"
           :criteria="criteria"
           :favorite-starts="authUser?.preferences?.favoriteStarts || []"
+          :user="authUser"
           :loading="loading"
           :locating="locating"
           :saved-count="saved.length"

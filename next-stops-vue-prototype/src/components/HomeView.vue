@@ -11,6 +11,7 @@ const props = defineProps({
   locating: { type: Boolean, default: false },
   savedCount: { type: Number, default: 0 },
   favoriteStarts: { type: Array, default: () => [] },
+  user: { type: Object, default: null },
 });
 const emit = defineEmits(["update:criteria", "find", "locate", "use-favorite-start", "navigate"]);
 const openSelect = ref("");
@@ -36,6 +37,14 @@ const locationSubtext = computed(() => {
 });
 
 const canUseFallback = computed(() => props.criteria.locationSource !== "fallback");
+const greeting = computed(() => {
+  const hour = new Date().getHours();
+  if (hour >= 5 && hour < 12) return "Good morning";
+  if (hour >= 12 && hour < 18) return "Good afternoon";
+  if (hour >= 18 && hour < 23) return "Good evening";
+  return "Good night";
+});
+const userName = computed(() => props.user?.name || props.user?.account || "Guest");
 
 function patch(updates) {
   emit("update:criteria", updates);
@@ -70,7 +79,10 @@ function useFallbackLocation() {
   <main class="screen home-screen">
     <header class="home-header">
       <div>
-        <p class="muted">Good morning</p>
+        <p class="muted greeting-line">
+          <span>{{ greeting }}</span>
+          <b>{{ userName }}</b>
+        </p>
         <h1>Where to next?</h1>
       </div>
     </header>

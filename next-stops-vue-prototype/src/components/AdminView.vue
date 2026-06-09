@@ -152,7 +152,7 @@ onMounted(async () => {
         >
           {{ tab.label }}
         </button>
-        <button type="button" @click="logoutAdmin">Logout</button>
+        <button class="admin-logout-button" type="button" @click="logoutAdmin">Log out</button>
       </nav>
 
       <section v-if="activeTab === 'dashboard'" class="admin-grid">

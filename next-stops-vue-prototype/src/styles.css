@@ -484,6 +484,18 @@ h2 {
   line-height: 1.25;
 }
 
+.greeting-line {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.greeting-line b {
+  color: var(--ink);
+  font-weight: 850;
+}
+
 .icon-button,
 .back-button {
   position: relative;
@@ -1571,6 +1583,13 @@ textarea {
   border-color: rgba(99, 102, 241, 0.2);
   background: var(--lavender);
   color: var(--indigo);
+}
+
+.admin-tabs .admin-logout-button {
+  margin-left: auto;
+  border-color: rgba(180, 74, 66, 0.24);
+  background: rgba(180, 74, 66, 0.08);
+  color: var(--danger);
 }
 
 .admin-grid {
