@@ -33,7 +33,7 @@ except ImportError:  # pragma: no cover - PostgreSQL is optional for local SQLit
     dict_row = None
 
 try:
-    from fastapi import Body, FastAPI, Header, HTTPException, Query
+    from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
     from fastapi.middleware.cors import CORSMiddleware
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("請先安裝 FastAPI dependencies：pip install -r requirements.txt") from exc
@@ -475,6 +475,15 @@ def require_current_user(authorization: str | None) -> dict[str, Any]:
     if not user:
         raise HTTPException(status_code=401, detail="請先登入")
     return user
+
+
+def require_admin(x_admin_token: str | None = Header(default=None), token: str | None = Query(default=None)) -> None:
+    expected = os.getenv("ADMIN_TOKEN", "").strip()
+    supplied = str(x_admin_token or token or "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="ADMIN_TOKEN 尚未設定")
+    if not supplied or not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Admin token 不正確")
 
 
 def verify_google_id_token(id_token: str) -> dict[str, Any]:
@@ -1866,6 +1875,159 @@ def delete_user_account(user: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "deleted_user_id": user["id"]}
 
 
+def scalar_count(db, table: str) -> int:
+    row = db.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
+    return int(row["count"] if isinstance(row, dict) else row["count"])
+
+
+def admin_summary() -> dict[str, Any]:
+    init_recommendation_db()
+    with connect_recommendation_db() as db:
+        db.row_factory = sqlite3.Row
+        counts = {
+            "users": scalar_count(db, "users"),
+            "auth_sessions": scalar_count(db, "auth_sessions"),
+            "recommendation_requests": scalar_count(db, "recommendation_requests"),
+            "saved_places": scalar_count(db, "saved_places"),
+            "recommendation_feedback": scalar_count(db, "recommendation_feedback"),
+        }
+    places = get_attraction_service().index.places
+    return {
+        "database": {
+            "backend": "postgresql" if USE_POSTGRES else "sqlite",
+            "path": "" if USE_POSTGRES else str(RECOMMENDATION_DB),
+        },
+        "counts": counts,
+        "places": {
+            "cache": str(ATTRACTION_CACHE),
+            "count": len(places),
+            "cache_exists": ATTRACTION_CACHE.exists(),
+        },
+        "api": {"status": "ok", "time": now_iso()},
+    }
+
+
+def admin_users(limit: int = 80) -> dict[str, Any]:
+    init_recommendation_db()
+    limit = max(1, min(int(limit or 80), 200))
+    with connect_recommendation_db() as db:
+        db.row_factory = sqlite3.Row
+        rows = db.execute(
+            """
+            SELECT id, provider, account, email, display_name, avatar_url, preferences_json, created_at, updated_at
+            FROM users
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    users = []
+    for row in rows:
+        preferences = _safe_json_loads(row["preferences_json"], {})
+        users.append({
+            "id": row["id"],
+            "provider": row["provider"],
+            "account": row["account"],
+            "email": row["email"],
+            "name": row["display_name"],
+            "avatar_url": row["avatar_url"],
+            "favorite_starts_count": len(preferences.get("favoriteStarts") or []),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        })
+    return {"users": users}
+
+
+def admin_delete_user(user_id: str) -> dict[str, Any]:
+    init_recommendation_db()
+    with connect_recommendation_db() as db:
+        db.row_factory = sqlite3.Row
+        row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return delete_user_account(public_user(row))
+
+
+def admin_recommendations(limit: int = 80) -> dict[str, Any]:
+    init_recommendation_db()
+    limit = max(1, min(int(limit or 80), 200))
+    with connect_recommendation_db() as db:
+        db.row_factory = sqlite3.Row
+        rows = db.execute(
+            """
+            SELECT id, created_at, session_id, criteria_json, source_status_json, result_count
+            FROM recommendation_requests
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    requests = []
+    for row in rows:
+        criteria = _safe_json_loads(row["criteria_json"], {})
+        source_status = _safe_json_loads(row["source_status_json"], {})
+        requests.append({
+            "id": row["id"],
+            "created_at": row["created_at"],
+            "session_id": row["session_id"],
+            "mood": criteria.get("mood"),
+            "location": criteria.get("locationLabel") or criteria.get("location"),
+            "distance": criteria.get("distance"),
+            "transport_modes": criteria.get("transportModes") or [],
+            "result_count": row["result_count"],
+            "database": source_status.get("database") or source_status.get("sqlite") or {},
+        })
+    return {"requests": requests}
+
+
+def admin_feedback(limit: int = 120) -> dict[str, Any]:
+    init_recommendation_db()
+    limit = max(1, min(int(limit or 120), 300))
+    with connect_recommendation_db() as db:
+        db.row_factory = sqlite3.Row
+        rows = db.execute(
+            """
+            SELECT session_id, request_id, place_id, feedback_type, note, created_at
+            FROM recommendation_feedback
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return {
+        "feedback": [
+            {
+                "session_id": row["session_id"],
+                "request_id": row["request_id"],
+                "place_id": row["place_id"],
+                "feedback_type": row["feedback_type"],
+                "note": row["note"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+    }
+
+
+def admin_places_summary() -> dict[str, Any]:
+    places = get_attraction_service().index.places
+    categories: dict[str, int] = {}
+    for place in places:
+        payload = place.to_dict() if hasattr(place, "to_dict") else dict(place)
+        category = str(payload.get("category") or payload.get("algorithm_category") or "unknown")
+        categories[category] = categories.get(category, 0) + 1
+    top_categories = [
+        {"category": category, "count": count}
+        for category, count in sorted(categories.items(), key=lambda item: item[1], reverse=True)[:12]
+    ]
+    return {
+        "cache": str(ATTRACTION_CACHE),
+        "cache_exists": ATTRACTION_CACHE.exists(),
+        "count": len(places),
+        "top_categories": top_categories,
+    }
+
+
 def _safe_json_loads(value: str | None, fallback: Any) -> Any:
     try:
         return json.loads(value or "")
@@ -2634,6 +2796,41 @@ def api_auth_logout(authorization: str | None = Header(default=None), token: str
 def api_auth_delete_account(authorization: str | None = Header(default=None)):
     user = require_current_user(authorization)
     return run_or_raise(lambda: delete_user_account(user))
+
+
+@app.get("/api/admin/summary")
+def api_admin_summary(_: None = Depends(require_admin)):
+    return run_or_raise(admin_summary)
+
+
+@app.get("/api/admin/users")
+def api_admin_users(limit: int = 80, _: None = Depends(require_admin)):
+    return run_or_raise(lambda: admin_users(limit))
+
+
+@app.delete("/api/admin/users/{user_id}")
+def api_admin_delete_user(user_id: str, _: None = Depends(require_admin)):
+    return run_or_raise(lambda: admin_delete_user(user_id))
+
+
+@app.get("/api/admin/recommendations")
+def api_admin_recommendations(limit: int = 80, _: None = Depends(require_admin)):
+    return run_or_raise(lambda: admin_recommendations(limit))
+
+
+@app.get("/api/admin/feedback")
+def api_admin_feedback(limit: int = 120, _: None = Depends(require_admin)):
+    return run_or_raise(lambda: admin_feedback(limit))
+
+
+@app.get("/api/admin/places")
+def api_admin_places(_: None = Depends(require_admin)):
+    return run_or_raise(admin_places_summary)
+
+
+@app.post("/api/admin/places/rebuild")
+def api_admin_rebuild_places(with_optional: bool = False, _: None = Depends(require_admin)):
+    return places_build(with_optional=with_optional)
 
 
 @app.post("/api/route")

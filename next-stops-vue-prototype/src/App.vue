@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import AdminView from "./components/AdminView.vue";
 import AuthView from "./components/AuthView.vue";
 import BottomNav from "./components/BottomNav.vue";
 import DetailView from "./components/DetailView.vue";
@@ -82,6 +83,7 @@ watch(booting, (isBooting) => {
 }, { immediate: true });
 
 const routeName = computed(() => {
+  if (route.value.startsWith("/admin")) return "admin";
   if (!authUser.value) return "auth";
   if (route.value.startsWith("/place/")) return "detail";
   if (route.value === "/results") return "results";
@@ -94,7 +96,7 @@ const savedIds = computed(() => saved.value.map((item) => item.id));
 
 function navigate(path) {
   const target = path || "/";
-  if (!authUser.value && target !== "/") return;
+  if (!authUser.value && target !== "/" && !target.startsWith("/admin")) return;
   if (window.location.hash.replace(/^#/, "") === target) route.value = target;
   else window.location.hash = target;
 }
@@ -509,6 +511,12 @@ function handleVisibilityChange() {
           @authenticated="setAuthenticated"
           @toast="showToast"
         />
+        <AdminView
+          v-else-if="!booting && routeName === 'admin'"
+          key="admin"
+          @navigate="navigate"
+          @toast="showToast"
+        />
         <HomeView
           v-else-if="routeName === 'home'"
           key="home"
@@ -584,7 +592,7 @@ function handleVisibilityChange() {
       <IconGlyph name="sound" />
       <span>{{ ambientEnabled ? "Sound on" : "Sound" }}</span>
     </button>
-    <BottomNav v-if="!booting && authUser" :route="route" :saved-count="saved.length" :user="authUser" @navigate="handleNavigate" />
+    <BottomNav v-if="!booting && authUser && routeName !== 'admin'" :route="route" :saved-count="saved.length" :user="authUser" @navigate="handleNavigate" />
     <Toast :message="toastMessage" />
 
     <Transition name="splash-fade">

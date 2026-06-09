@@ -3,6 +3,7 @@ const SAVED_KEY = "nextstops:vue-prototype:saved";
 const PLACE_CACHE_KEY = "nextstops:vue-prototype:places";
 const SESSION_KEY = "nextstops:vue-prototype:session";
 const AUTH_KEY = "nextstops:vue-prototype:auth";
+const ADMIN_KEY = "nextstops:vue-prototype:admin";
 
 let placeCache = loadJson(PLACE_CACHE_KEY, []);
 
@@ -44,6 +45,67 @@ export function setStoredAuth(auth) {
 export function clearStoredAuth() {
   sessionStorage.removeItem(AUTH_KEY);
   localStorage.removeItem(AUTH_KEY);
+}
+
+export function getStoredAdminToken() {
+  return sessionStorage.getItem(ADMIN_KEY) || "";
+}
+
+export function setStoredAdminToken(token) {
+  const clean = String(token || "").trim();
+  if (!clean) sessionStorage.removeItem(ADMIN_KEY);
+  else sessionStorage.setItem(ADMIN_KEY, clean);
+  return clean;
+}
+
+export function clearStoredAdminToken() {
+  sessionStorage.removeItem(ADMIN_KEY);
+}
+
+async function fetchAdmin(path, options = {}) {
+  const token = getStoredAdminToken();
+  const headers = {
+    ...(options.body ? { "Content-Type": "application/json" } : {}),
+    ...(token ? { "X-Admin-Token": token } : {}),
+    ...(options.headers || {}),
+  };
+  const response = await fetch(`${DATA_API_BASE}${path}`, { ...options, headers });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || data.detail || `Admin API 回傳 HTTP ${response.status}`);
+  return data;
+}
+
+export async function verifyAdminToken(token) {
+  setStoredAdminToken(token);
+  return fetchAdmin("/api/admin/summary");
+}
+
+export function getAdminSummary() {
+  return fetchAdmin("/api/admin/summary");
+}
+
+export function getAdminUsers() {
+  return fetchAdmin("/api/admin/users");
+}
+
+export function deleteAdminUser(userId) {
+  return fetchAdmin(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
+}
+
+export function getAdminRecommendations() {
+  return fetchAdmin("/api/admin/recommendations");
+}
+
+export function getAdminFeedback() {
+  return fetchAdmin("/api/admin/feedback");
+}
+
+export function getAdminPlaces() {
+  return fetchAdmin("/api/admin/places");
+}
+
+export function rebuildAdminPlaces() {
+  return fetchAdmin("/api/admin/places/rebuild", { method: "POST" });
 }
 
 export function startGuestSession() {
