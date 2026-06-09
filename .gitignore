@@ -20,6 +20,7 @@ coverage/
 next_stops_figma_pack/
 node_modules/
 NEXT-STOPS-recommendation-algorithm/
+next-stops-prototype/
 
 Weather_AQI_API_Clients.py
 next_stops_algorithm_simulation.py
