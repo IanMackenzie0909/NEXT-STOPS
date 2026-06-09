@@ -4,6 +4,7 @@ import { computed, reactive, ref, watch } from "vue";
 const props = defineProps({
   user: { type: Object, required: true },
   saved: { type: Array, default: () => [] },
+  criteria: { type: Object, default: null },
 });
 const emit = defineEmits(["navigate", "save-profile", "save-preferences", "logout", "delete-account", "toast"]);
 
@@ -20,6 +21,8 @@ const controls = [
 
 const weights = reactive({});
 const editingProfile = ref(false);
+const addingStart = ref(false);
+const startLabel = ref("");
 const profileForm = reactive({ name: "", avatar_url: "" });
 
 const initials = computed(() => String(props.user?.name || props.user?.account || "N").slice(0, 1).toUpperCase());
@@ -28,6 +31,8 @@ const providerLabel = computed(() => {
   if (props.user?.provider === "guest") return "訪客模式";
   return "平台帳戶";
 });
+const favoriteStarts = computed(() => props.user?.preferences?.favoriteStarts || []);
+const canAddStart = computed(() => props.user?.provider !== "guest" && favoriteStarts.value.length < 2);
 
 function syncWeights() {
   const current = props.user?.preferences?.weightAdjustments || {};
@@ -83,6 +88,61 @@ function selectAvatar(event) {
 
 function savePreferences() {
   emit("save-preferences", { weightAdjustments: { ...weights } });
+}
+
+function saveStarts(starts) {
+  emit("save-starts", starts.slice(0, 2));
+}
+
+function removeStart(id) {
+  saveStarts(favoriteStarts.value.filter((item) => item.id !== id));
+}
+
+function addStartFromCoordinates(label, lat, lon) {
+  const cleanLabel = String(label || "").trim().slice(0, 24);
+  if (!cleanLabel) {
+    emit("toast", "請先為常用起點命名");
+    return;
+  }
+  saveStarts([
+    ...favoriteStarts.value,
+    {
+      id: globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `start-${Date.now()}`,
+      label: cleanLabel,
+      lat: Number(Number(lat).toFixed(6)),
+      lon: Number(Number(lon).toFixed(6)),
+    },
+  ]);
+  startLabel.value = "";
+}
+
+function addCurrentStart() {
+  if (!canAddStart.value) return;
+  const label = startLabel.value.trim();
+  if (!label) {
+    emit("toast", "請先為常用起點命名");
+    return;
+  }
+  if (props.criteria?.lat !== null && props.criteria?.lat !== undefined && props.criteria?.lon !== null && props.criteria?.lon !== undefined) {
+    addStartFromCoordinates(label, props.criteria.lat, props.criteria.lon);
+    return;
+  }
+  if (!("geolocation" in navigator)) {
+    emit("toast", "瀏覽器不支援定位，請先在首頁使用定位");
+    return;
+  }
+  addingStart.value = true;
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      addingStart.value = false;
+      addStartFromCoordinates(label, position.coords.latitude, position.coords.longitude);
+    },
+    () => {
+      addingStart.value = false;
+      emit("toast", "定位失敗，請先在首頁使用定位");
+    },
+    { enableHighAccuracy: true, timeout: 8000, maximumAge: 120000 },
+  );
 }
 
 function deleteAccount() {
@@ -155,6 +215,26 @@ watch(() => props.user, () => {
         <strong>個人儲存的地點</strong>
         <p>{{ saved.length }} 個地點已儲存到你的清單。</p>
         <button class="ghost-action" type="button" @click="emit('navigate', '/saved')">查看清單</button>
+      </article>
+
+      <article v-if="user.provider !== 'guest'" class="profile-section favorite-start-panel">
+        <strong>常用起始點</strong>
+        <p>最多可儲存 2 個常用出發定位，首頁可直接切換。</p>
+        <div v-if="favoriteStarts.length" class="saved-start-list">
+          <div v-for="start in favoriteStarts" :key="start.id" class="saved-start-item">
+            <div>
+              <b>{{ start.label }}</b>
+              <span>({{ Number(start.lat).toFixed(4) }}, {{ Number(start.lon).toFixed(4) }})</span>
+            </div>
+            <button class="ghost-action compact danger" type="button" @click="removeStart(start.id)">移除</button>
+          </div>
+        </div>
+        <div v-if="canAddStart" class="favorite-start-form">
+          <input v-model="startLabel" maxlength="24" placeholder="例如：台灣大學" />
+          <button class="ghost-action" type="button" :disabled="addingStart" @click="addCurrentStart">
+            {{ addingStart ? "定位中..." : "新增目前起點" }}
+          </button>
+        </div>
       </article>
 
       <article class="profile-section preference-panel">

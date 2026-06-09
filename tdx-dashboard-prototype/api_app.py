@@ -26,6 +26,13 @@ from typing import Any
 import requests
 
 try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:  # pragma: no cover - PostgreSQL is optional for local SQLite mode.
+    psycopg = None
+    dict_row = None
+
+try:
     from fastapi import Body, FastAPI, Header, HTTPException, Query
     from fastapi.middleware.cors import CORSMiddleware
 except ImportError as exc:  # pragma: no cover
@@ -37,6 +44,13 @@ PROJECT_ROOT = ROOT.parent
 ATTRACTION_PLATFORM_ROOT = ROOT / "taipei_attraction_search_platform"
 ATTRACTION_CACHE = ATTRACTION_PLATFORM_ROOT / "data" / "taipei_places.json"
 RECOMMENDATION_DB = Path(os.getenv("NEXT_STOPS_DB_PATH", ROOT / "data" / "next_stops.sqlite3"))
+DATABASE_URL = (
+    os.getenv("DATABASE_URL")
+    or os.getenv("POSTGRES_URL")
+    or os.getenv("NEXT_STOPS_DATABASE_URL")
+    or ""
+)
+USE_POSTGRES = bool(DATABASE_URL)
 GOOGLE_DIRECTIONS_URL = "https://maps.googleapis.com/maps/api/directions/json"
 GOOGLE_ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 GOOGLE_GEOCODING_URL = "https://maps.googleapis.com/maps/api/geocode/json"
@@ -222,7 +236,10 @@ except ImportError as exc:  # pragma: no cover
 app = FastAPI(title="NEXT STOPS Data API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("NEXT_STOPS_CORS_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173").split(","),
+    allow_origins=os.getenv(
+        "NEXT_STOPS_CORS_ORIGINS",
+        "http://127.0.0.1:5174,http://localhost:5174",
+    ).split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -414,7 +431,7 @@ def create_auth_session(user_id: str) -> str:
     init_recommendation_db()
     token = secrets.token_urlsafe(40)
     now = now_iso()
-    with sqlite3.connect(RECOMMENDATION_DB) as db:
+    with connect_recommendation_db() as db:
         db.execute(
             "INSERT INTO auth_sessions (token, user_id, created_at, last_seen) VALUES (?, ?, ?, ?)",
             (token, user_id, now, now),
@@ -437,7 +454,7 @@ def current_user_from_token(token: str) -> dict[str, Any] | None:
     if not token:
         return None
     init_recommendation_db()
-    with sqlite3.connect(RECOMMENDATION_DB) as db:
+    with connect_recommendation_db() as db:
         db.row_factory = sqlite3.Row
         row = db.execute(
             """
@@ -472,6 +489,64 @@ def verify_google_id_token(id_token: str) -> dict[str, Any]:
     if info.get("email_verified") not in {True, "true", "True", "1", 1}:
         raise ValueError("Google 帳戶尚未完成 email 驗證")
     return info
+
+
+def convert_sql_for_postgres(sql: str) -> str:
+    return (
+        sql
+        .replace("?", "%s")
+        .replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
+    )
+
+
+class PostgresCursor:
+    def __init__(self, cursor):
+        self.cursor = cursor
+        self.lastrowid = None
+
+    @property
+    def rowcount(self) -> int:
+        return self.cursor.rowcount
+
+    def fetchone(self):
+        return self.cursor.fetchone()
+
+    def fetchall(self):
+        return self.cursor.fetchall()
+
+
+class PostgresConnection:
+    def __init__(self):
+        if psycopg is None:
+            raise RuntimeError("PostgreSQL mode requires psycopg. Install dependencies with: pip install -r requirements.txt")
+        self.conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+        self.row_factory = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type:
+            self.conn.rollback()
+        else:
+            self.conn.commit()
+        self.conn.close()
+        return False
+
+    def execute(self, sql: str, params: tuple | list | None = None):
+        cursor = self.conn.execute(convert_sql_for_postgres(sql), params or ())
+        return PostgresCursor(cursor)
+
+    def executemany(self, sql: str, seq_of_params):
+        cursor = self.conn.cursor()
+        cursor.executemany(convert_sql_for_postgres(sql), seq_of_params)
+        return PostgresCursor(cursor)
+
+
+def connect_recommendation_db():
+    if USE_POSTGRES:
+        return PostgresConnection()
+    return sqlite3.connect(RECOMMENDATION_DB)
 
 
 def decode_polyline(polyline: str) -> list[list[float]]:
@@ -1277,8 +1352,9 @@ def build_place_detail(
 
 
 def init_recommendation_db() -> None:
-    RECOMMENDATION_DB.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(RECOMMENDATION_DB) as db:
+    if not USE_POSTGRES:
+        RECOMMENDATION_DB.parent.mkdir(parents=True, exist_ok=True)
+    with connect_recommendation_db() as db:
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS recommendation_requests (
@@ -1394,7 +1470,7 @@ def record_recommendation(
     results: list[dict[str, Any]],
 ) -> None:
     init_recommendation_db()
-    with sqlite3.connect(RECOMMENDATION_DB) as db:
+    with connect_recommendation_db() as db:
         db.execute(
             """
             INSERT INTO recommendation_requests (
@@ -1435,7 +1511,7 @@ def record_recommendation(
 
 def fetch_recommendation_record(request_id: str) -> dict[str, Any] | None:
     init_recommendation_db()
-    with sqlite3.connect(RECOMMENDATION_DB) as db:
+    with connect_recommendation_db() as db:
         db.row_factory = sqlite3.Row
         request = db.execute("SELECT * FROM recommendation_requests WHERE id = ?", (request_id,)).fetchone()
         if request is None:
@@ -1475,7 +1551,7 @@ def saved_place_from_row(row: sqlite3.Row) -> dict[str, Any]:
 
 def list_saved_places(session_id: str) -> list[dict[str, Any]]:
     init_recommendation_db()
-    with sqlite3.connect(RECOMMENDATION_DB) as db:
+    with connect_recommendation_db() as db:
         db.row_factory = sqlite3.Row
         rows = db.execute(
             "SELECT * FROM saved_places WHERE session_id = ? ORDER BY updated_at DESC",
@@ -1498,7 +1574,7 @@ def upsert_saved_place(payload: dict[str, Any]) -> dict[str, Any]:
     lng = to_float(place.get("lng") if place.get("lng") is not None else place.get("lon"))
     note = str(payload.get("note") if payload.get("note") is not None else place.get("note") or "")
     init_recommendation_db()
-    with sqlite3.connect(RECOMMENDATION_DB) as db:
+    with connect_recommendation_db() as db:
         db.row_factory = sqlite3.Row
         db.execute(
             """
@@ -1539,7 +1615,7 @@ def upsert_saved_place(payload: dict[str, Any]) -> dict[str, Any]:
 
 def update_saved_place_note(session_id: str, place_id: str, note: str) -> dict[str, Any] | None:
     init_recommendation_db()
-    with sqlite3.connect(RECOMMENDATION_DB) as db:
+    with connect_recommendation_db() as db:
         db.row_factory = sqlite3.Row
         db.execute(
             "UPDATE saved_places SET note = ?, updated_at = ? WHERE session_id = ? AND place_id = ?",
@@ -1554,7 +1630,7 @@ def update_saved_place_note(session_id: str, place_id: str, note: str) -> dict[s
 
 def remove_saved_place(session_id: str, place_id: str) -> dict[str, Any]:
     init_recommendation_db()
-    with sqlite3.connect(RECOMMENDATION_DB) as db:
+    with connect_recommendation_db() as db:
         cursor = db.execute(
             "DELETE FROM saved_places WHERE session_id = ? AND place_id = ?",
             (session_id, place_id),
@@ -1575,13 +1651,16 @@ def record_feedback(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("feedback_type is required")
 
     init_recommendation_db()
-    with sqlite3.connect(RECOMMENDATION_DB) as db:
-        cursor = db.execute(
-            """
+    insert_sql = """
             INSERT INTO recommendation_feedback (
                 session_id, request_id, place_id, feedback_type, note, created_at
             ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
+            """
+    if USE_POSTGRES:
+        insert_sql += " RETURNING id"
+    with connect_recommendation_db() as db:
+        cursor = db.execute(
+            insert_sql,
             (
                 session_id,
                 payload.get("request_id"),
@@ -1591,8 +1670,9 @@ def record_feedback(payload: dict[str, Any]) -> dict[str, Any]:
                 now_iso(),
             ),
         )
+        inserted_id = cursor.fetchone()["id"] if USE_POSTGRES else cursor.lastrowid
     signals = build_session_preference_signals(session_id)
-    return {"ok": True, "id": cursor.lastrowid, "signals": signals}
+    return {"ok": True, "id": inserted_id, "signals": signals}
 
 
 def register_platform_user(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1610,7 +1690,7 @@ def register_platform_user(payload: dict[str, Any]) -> dict[str, Any]:
     user_id = uuid.uuid4().hex
     now = now_iso()
     try:
-        with sqlite3.connect(RECOMMENDATION_DB) as db:
+        with connect_recommendation_db() as db:
             db.row_factory = sqlite3.Row
             db.execute(
                 """
@@ -1622,7 +1702,9 @@ def register_platform_user(payload: dict[str, Any]) -> dict[str, Any]:
                 (user_id, account, name, hash_password(password), now, now),
             )
             row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    except sqlite3.IntegrityError as exc:
+    except Exception as exc:
+        if not isinstance(exc, sqlite3.IntegrityError) and exc.__class__.__name__ != "UniqueViolation":
+            raise
         raise ValueError("這個帳號已經被使用") from exc
     return {"ok": True, "user": public_user(row)}
 
@@ -1633,7 +1715,7 @@ def login_platform_user(payload: dict[str, Any]) -> dict[str, Any]:
     if not account or not password:
         raise ValueError("帳號與密碼為必填")
     init_recommendation_db()
-    with sqlite3.connect(RECOMMENDATION_DB) as db:
+    with connect_recommendation_db() as db:
         db.row_factory = sqlite3.Row
         row = db.execute("SELECT * FROM users WHERE account = ? AND provider = 'platform'", (account,)).fetchone()
     if row is None or not verify_password(password, row["password_hash"]):
@@ -1655,7 +1737,7 @@ def login_google_user(payload: dict[str, Any]) -> dict[str, Any]:
 
     init_recommendation_db()
     now = now_iso()
-    with sqlite3.connect(RECOMMENDATION_DB) as db:
+    with connect_recommendation_db() as db:
         db.row_factory = sqlite3.Row
         row = db.execute("SELECT * FROM users WHERE google_sub = ?", (google_sub,)).fetchone()
         if row is None:
@@ -1684,14 +1766,21 @@ def login_google_user(payload: dict[str, Any]) -> dict[str, Any]:
 
 def update_user_preferences(user: dict[str, Any], preferences: dict[str, Any]) -> dict[str, Any]:
     allowed_weights = {"mood", "distance", "weather", "aqi", "budget", "category", "quality", "environment"}
-    raw_weights = preferences.get("weightAdjustments") or preferences.get("weight_adjustments") or {}
-    weights = {}
-    for key, value in raw_weights.items():
-        if key in allowed_weights:
-            weights[key] = max(0.5, min(1.6, float(value)))
-    clean_preferences = {"weightAdjustments": weights}
+    current_preferences = dict(user.get("preferences") or {})
+    clean_preferences = dict(current_preferences)
+    if "weightAdjustments" in preferences or "weight_adjustments" in preferences:
+        raw_weights = preferences.get("weightAdjustments") or preferences.get("weight_adjustments") or {}
+        weights = {}
+        for key, value in raw_weights.items():
+            if key in allowed_weights:
+                weights[key] = max(0.5, min(1.6, float(value)))
+        clean_preferences["weightAdjustments"] = weights
+    if "favoriteStarts" in preferences or "favorite_starts" in preferences:
+        clean_preferences["favoriteStarts"] = normalize_favorite_starts(
+            preferences.get("favoriteStarts") or preferences.get("favorite_starts") or []
+        )
     init_recommendation_db()
-    with sqlite3.connect(RECOMMENDATION_DB) as db:
+    with connect_recommendation_db() as db:
         db.row_factory = sqlite3.Row
         db.execute(
             "UPDATE users SET preferences_json = ?, updated_at = ? WHERE id = ?",
@@ -1699,6 +1788,29 @@ def update_user_preferences(user: dict[str, Any], preferences: dict[str, Any]) -
         )
         row = db.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
     return public_user(row)
+
+
+def normalize_favorite_starts(raw_starts: Any) -> list[dict[str, Any]]:
+    starts = []
+    if not isinstance(raw_starts, list):
+        raise ValueError("常用起始點格式錯誤")
+    for item in raw_starts[:2]:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "").strip()[:24]
+        lat = float(item.get("lat"))
+        lon = float(item.get("lon"))
+        if not label:
+            raise ValueError("請先為常用起點命名")
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise ValueError("常用起始點座標不正確")
+        starts.append({
+            "id": str(item.get("id") or uuid.uuid4().hex),
+            "label": label,
+            "lat": round(lat, 6),
+            "lon": round(lon, 6),
+        })
+    return starts
 
 
 def update_user_profile(user: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
@@ -1714,7 +1826,7 @@ def update_user_profile(user: dict[str, Any], payload: dict[str, Any]) -> dict[s
         raise ValueError("頭像格式不支援")
 
     init_recommendation_db()
-    with sqlite3.connect(RECOMMENDATION_DB) as db:
+    with connect_recommendation_db() as db:
         db.row_factory = sqlite3.Row
         db.execute(
             "UPDATE users SET display_name = ?, avatar_url = ?, updated_at = ? WHERE id = ?",
@@ -1728,7 +1840,7 @@ def logout_auth_session(token: str) -> dict[str, Any]:
     token = bearer_token(token)
     if token:
         init_recommendation_db()
-        with sqlite3.connect(RECOMMENDATION_DB) as db:
+        with connect_recommendation_db() as db:
             db.execute("DELETE FROM auth_sessions WHERE token = ?", (token,))
     return {"ok": True}
 
@@ -1736,9 +1848,10 @@ def logout_auth_session(token: str) -> dict[str, Any]:
 def delete_user_account(user: dict[str, Any]) -> dict[str, Any]:
     session_id = user["session_id"]
     init_recommendation_db()
-    with sqlite3.connect(RECOMMENDATION_DB) as db:
+    with connect_recommendation_db() as db:
+        db.row_factory = sqlite3.Row
         request_ids = [
-            row[0]
+            row["id"]
             for row in db.execute("SELECT id FROM recommendation_requests WHERE session_id = ?", (session_id,)).fetchall()
         ]
         if request_ids:
@@ -1783,7 +1896,7 @@ def build_session_preference_signals(session_id: str | None) -> dict[str, Any]:
         return base
 
     init_recommendation_db()
-    with sqlite3.connect(RECOMMENDATION_DB) as db:
+    with connect_recommendation_db() as db:
         db.row_factory = sqlite3.Row
         feedback_rows = db.execute(
             """
@@ -1852,7 +1965,7 @@ def build_session_preference_signals(session_id: str | None) -> dict[str, Any]:
         "feedback_count": len(feedback_rows),
         "saved_count": len(saved_rows),
     }
-    with sqlite3.connect(RECOMMENDATION_DB) as db:
+    with connect_recommendation_db() as db:
         db.execute(
             """
             INSERT INTO user_preference_signals (session_id, signals_json, updated_at)
@@ -2430,9 +2543,10 @@ def build_recommendations(payload: dict[str, Any]) -> dict[str, Any]:
             "filtered_reasons": dict(filtered_reasons),
         },
         "preferences": preference_signals,
-        "sqlite": {
+        "database": {
             "status": "ok",
-            "path": str(RECOMMENDATION_DB),
+            "backend": "postgresql" if USE_POSTGRES else "sqlite",
+            "path": "" if USE_POSTGRES else str(RECOMMENDATION_DB),
         },
     }
     record_recommendation(request_id, session_id, criteria, context, source_status, results)
@@ -2512,8 +2626,8 @@ def api_auth_profile(payload: dict[str, Any] | None = Body(default=None), author
 
 
 @app.post("/api/auth/logout")
-def api_auth_logout(authorization: str | None = Header(default=None)):
-    return run_or_raise(lambda: logout_auth_session(authorization or ""))
+def api_auth_logout(authorization: str | None = Header(default=None), token: str | None = Query(default=None)):
+    return run_or_raise(lambda: logout_auth_session(authorization or token or ""))
 
 
 @app.delete("/api/auth/account")

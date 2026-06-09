@@ -22,20 +22,26 @@ async function fetchJson(base, path, options = {}) {
 }
 
 export function getStoredAuth() {
-  return loadJson(AUTH_KEY, null);
+  const auth = loadSessionJson(AUTH_KEY, null);
+  if (auth) return auth;
+  if (localStorage.getItem(AUTH_KEY)) localStorage.removeItem(AUTH_KEY);
+  return null;
 }
 
 export function setStoredAuth(auth) {
   if (!auth) {
+    sessionStorage.removeItem(AUTH_KEY);
     localStorage.removeItem(AUTH_KEY);
     return null;
   }
-  localStorage.setItem(AUTH_KEY, JSON.stringify(auth));
-  if (auth.user?.session_id) localStorage.setItem(SESSION_KEY, auth.user.session_id);
+  sessionStorage.setItem(AUTH_KEY, JSON.stringify(auth));
+  localStorage.removeItem(AUTH_KEY);
+  if (auth.mode === "guest" && auth.user?.session_id) localStorage.setItem(SESSION_KEY, auth.user.session_id);
   return auth;
 }
 
 export function clearStoredAuth() {
+  sessionStorage.removeItem(AUTH_KEY);
   localStorage.removeItem(AUTH_KEY);
 }
 
@@ -96,7 +102,17 @@ export async function getCurrentUser() {
 export async function updateUserPreferences(preferences) {
   const auth = getStoredAuth();
   if (!auth?.token) {
-    const next = { ...(auth || startGuestSession()), user: { ...(auth?.user || {}), preferences } };
+    const current = auth || startGuestSession();
+    const next = {
+      ...current,
+      user: {
+        ...(current.user || {}),
+        preferences: {
+          ...(current.user?.preferences || {}),
+          ...preferences,
+        },
+      },
+    };
     setStoredAuth(next);
     return next.user;
   }
@@ -106,6 +122,10 @@ export async function updateUserPreferences(preferences) {
   });
   setStoredAuth({ ...auth, user: data.user });
   return data.user;
+}
+
+export function updateFavoriteStarts(favoriteStarts) {
+  return updateUserPreferences({ favoriteStarts });
 }
 
 export async function updateUserProfile(profile) {
@@ -130,6 +150,24 @@ export async function logoutAccount() {
     await fetchJson(DATA_API_BASE, "/api/auth/logout", { method: "POST" });
   } catch {
     // Local logout should still proceed if the API is offline.
+  }
+  clearStoredAuth();
+}
+
+export function logoutOnPageClose() {
+  const auth = getStoredAuth();
+  if (!auth?.token) {
+    clearStoredAuth();
+    return;
+  }
+  try {
+    const payload = new Blob([JSON.stringify({})], { type: "application/json" });
+    const url = `${DATA_API_BASE}/api/auth/logout?token=${encodeURIComponent(auth.token)}`;
+    if (!navigator.sendBeacon?.(url, payload)) {
+      fetch(url, { method: "POST", keepalive: true }).catch(() => {});
+    }
+  } catch {
+    // Page is unloading; local session cleanup is the important part.
   }
   clearStoredAuth();
 }
@@ -415,7 +453,7 @@ function getSessionId() {
 
 function getOrCreateAnonymousSession() {
   const existing = localStorage.getItem(SESSION_KEY);
-  if (existing) return existing;
+  if (existing && !String(existing).startsWith("user:")) return existing;
   const id = globalThis.crypto?.randomUUID
     ? globalThis.crypto.randomUUID()
     : `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -447,6 +485,14 @@ function rememberPlaces(places) {
 function loadJson(key, fallback) {
   try {
     return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback));
+  } catch {
+    return fallback;
+  }
+}
+
+function loadSessionJson(key, fallback) {
+  try {
+    return JSON.parse(sessionStorage.getItem(key) || JSON.stringify(fallback));
   } catch {
     return fallback;
   }

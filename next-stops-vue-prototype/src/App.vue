@@ -17,9 +17,11 @@ import {
   getRecommendations,
   getSavedPlaces,
   getStoredAuth,
+  logoutOnPageClose,
   logoutAccount,
   savePlace,
   submitRecommendationFeedback,
+  updateFavoriteStarts,
   updateSavedPlace,
   updateUserProfile,
   updateUserPreferences,
@@ -110,6 +112,17 @@ function updateCriteria(updates) {
   Object.assign(criteria, updates);
 }
 
+function useFavoriteStart(start) {
+  if (start?.lat === undefined || start?.lon === undefined) return;
+  updateCriteria({
+    location: `favorite:${start.id}`,
+    locationLabel: start.label,
+    locationSource: "favorite",
+    lat: Number(start.lat),
+    lon: Number(start.lon),
+  });
+}
+
 function applyUserPreferences(user) {
   criteria.weightAdjustments = { ...(user?.preferences?.weightAdjustments || {}) };
 }
@@ -143,7 +156,7 @@ function locateUser() {
         const lon = Number(position.coords.longitude.toFixed(6));
         updateCriteria({
           location: "current",
-          locationLabel: "目前定位",
+          locationLabel: "你的位置",
           locationSource: "gps",
           lat,
           lon,
@@ -177,7 +190,7 @@ async function findStops() {
   results.value = [];
   navigate("/results");
   try {
-    if (criteria.locationSource !== "gps") await locateUser();
+    if (criteria.locationSource === "fallback") await locateUser();
     const data = await getRecommendations({ ...criteria });
     latestRequestId.value = data.request_id || "";
     results.value = data.results || [];
@@ -263,6 +276,16 @@ async function saveProfile(profile) {
     showToast("個人資料已更新");
   } catch (error) {
     showToast(`個人資料無法儲存：${error.message}`);
+  }
+}
+
+async function saveFavoriteStarts(favoriteStarts) {
+  try {
+    const user = await updateFavoriteStarts(favoriteStarts);
+    authUser.value = user;
+    showToast("常用起始點已更新");
+  } catch (error) {
+    showToast(`常用起始點無法儲存：${error.message}`);
   }
 }
 
@@ -420,6 +443,7 @@ onMounted(() => {
     if (!started) armAmbientGestureStart();
   });
   document.addEventListener("visibilitychange", handleVisibilityChange);
+  window.addEventListener("pagehide", handlePageHide);
   const storedAuth = getStoredAuth();
   if (storedAuth?.user) {
     authUser.value = storedAuth.user;
@@ -447,10 +471,15 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener("visibilitychange", handleVisibilityChange);
+  window.removeEventListener("pagehide", handlePageHide);
   removeAmbientGestureStart();
   stopAmbient({ immediate: true });
   document.body.classList.remove("startup-active");
 });
+
+function handlePageHide() {
+  logoutOnPageClose();
+}
 
 function handleVisibilityChange() {
   if (document.visibilityState !== "visible" || booting.value || ambientEnabled.value) return;
@@ -484,11 +513,13 @@ function handleVisibilityChange() {
           v-else-if="routeName === 'home'"
           key="home"
           :criteria="criteria"
+          :favorite-starts="authUser?.preferences?.favoriteStarts || []"
           :loading="loading"
           :locating="locating"
           :saved-count="saved.length"
           @update:criteria="updateCriteria"
           @locate="locateUser"
+          @use-favorite-start="useFavoriteStart"
           @find="findStops"
           @navigate="handleNavigate"
         />
@@ -531,8 +562,10 @@ function handleVisibilityChange() {
           key="profile"
           :user="authUser"
           :saved="saved"
+          :criteria="criteria"
           @navigate="navigate"
           @save-profile="saveProfile"
+          @save-starts="saveFavoriteStarts"
           @save-preferences="savePreferences"
           @logout="logout"
           @delete-account="removeAccount"

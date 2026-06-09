@@ -10,23 +10,32 @@ const props = defineProps({
   loading: { type: Boolean, default: false },
   locating: { type: Boolean, default: false },
   savedCount: { type: Number, default: 0 },
+  favoriteStarts: { type: Array, default: () => [] },
 });
-const emit = defineEmits(["update:criteria", "find", "locate", "navigate"]);
+const emit = defineEmits(["update:criteria", "find", "locate", "use-favorite-start", "navigate"]);
 const openSelect = ref("");
 
 const locationText = computed(() => {
   if (props.criteria.locationSource === "gps" && props.criteria.lat && props.criteria.lon) {
-    return "目前定位 • 你的定位";
+    return "定位 • 你的位置";
   }
-  return props.criteria.locationLabel || LOCATION_FALLBACK_LABEL;
+  if (props.criteria.locationSource === "favorite") {
+    return `定位 • ${props.criteria.locationLabel || "已儲存起點"}`;
+  }
+  return `定位 • ${props.criteria.locationLabel || LOCATION_FALLBACK_LABEL}`;
 });
 
 const locationSubtext = computed(() => {
   if (props.criteria.locationSource === "gps" && props.criteria.lat && props.criteria.lon) {
     return `(${Number(props.criteria.lat).toFixed(4)}, ${Number(props.criteria.lon).toFixed(4)})`;
   }
+  if (props.criteria.locationSource === "favorite" && props.criteria.lat && props.criteria.lon) {
+    return `(${Number(props.criteria.lat).toFixed(4)}, ${Number(props.criteria.lon).toFixed(4)})`;
+  }
   return "目前使用預設起點；按 Use location 可改用即時定位。";
 });
+
+const canUseFallback = computed(() => props.criteria.locationSource !== "fallback");
 
 function patch(updates) {
   emit("update:criteria", updates);
@@ -43,6 +52,16 @@ function toggleTransport(modeId) {
     transportModes: current.includes(modeId)
       ? current.filter((item) => item !== modeId)
       : [...current, modeId],
+  });
+}
+
+function useFallbackLocation() {
+  patch({
+    location: "taipei_main",
+    locationLabel: LOCATION_FALLBACK_LABEL,
+    locationSource: "fallback",
+    lat: null,
+    lon: null,
   });
 }
 </script>
@@ -117,6 +136,27 @@ function toggleTransport(modeId) {
         </div>
         <button class="ghost-action compact" type="button" :disabled="locating" @click="emit('locate')">
           {{ locating ? "Locating..." : "Use location" }}
+        </button>
+      </div>
+
+      <div class="favorite-start-switcher" v-if="favoriteStarts.length || canUseFallback">
+        <button
+          v-if="canUseFallback"
+          class="start-chip"
+          type="button"
+          @click="useFallbackLocation"
+        >
+          台北車站
+        </button>
+        <button
+          v-for="start in favoriteStarts"
+          :key="start.id"
+          class="start-chip"
+          :class="{ selected: criteria.locationSource === 'favorite' && criteria.location === `favorite:${start.id}` }"
+          type="button"
+          @click="emit('use-favorite-start', start)"
+        >
+          {{ start.label }}
         </button>
       </div>
 

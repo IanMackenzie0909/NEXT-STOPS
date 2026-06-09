@@ -1163,6 +1163,30 @@ textarea {
   opacity: 0.72;
 }
 
+.favorite-start-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.start-chip {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.74);
+  color: var(--muted);
+  padding: 0 13px;
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.start-chip.selected {
+  border-color: rgba(99, 102, 241, 0.18);
+  background: var(--lavender);
+  color: var(--indigo);
+}
+
 .ghost-action.saved {
   border-color: rgba(95, 146, 120, 0.2);
   background: rgba(95, 146, 120, 0.12);
@@ -1281,7 +1305,8 @@ textarea {
 }
 
 .auth-form input,
-.profile-name-field input {
+.profile-name-field input,
+.favorite-start-form input {
   width: 100%;
   min-height: 48px;
   border: 1px solid var(--line);
@@ -1295,7 +1320,8 @@ textarea {
 }
 
 .auth-form input:focus,
-.profile-name-field input:focus {
+.profile-name-field input:focus,
+.favorite-start-form input:focus {
   border-color: rgba(99, 102, 241, 0.42);
   box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.09);
 }
@@ -1426,6 +1452,44 @@ textarea {
   gap: 12px;
   align-content: start;
   box-shadow: var(--shadow-calm);
+}
+
+.saved-start-list {
+  display: grid;
+  gap: 8px;
+}
+
+.saved-start-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 16px;
+  background: rgba(241, 245, 249, 0.82);
+}
+
+.saved-start-item div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.saved-start-item b {
+  color: var(--ink);
+  font-size: 0.9rem;
+}
+
+.saved-start-item span {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 750;
+}
+
+.favorite-start-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
 }
 
 .preference-panel {
@@ -2733,6 +2797,16 @@ input:focus-visible {
 
   .profile-grid {
     grid-template-columns: 1fr;
+  }
+
+  .favorite-start-form,
+  .saved-start-item {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .saved-start-item {
+    align-items: stretch;
   }
 
   .transport-grid {

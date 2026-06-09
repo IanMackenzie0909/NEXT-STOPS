@@ -28,7 +28,7 @@ function validateRegister() {
   if (registerForm.password !== registerForm.confirm_password) return "兩次輸入的密碼不一致";
   if (/\s/.test(registerForm.password)) return "密碼開頭與中間不得包含空白";
   if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$_-])[A-Za-z\d@$_-]{8,16}$/.test(registerForm.password)) {
-    return "密碼需 8-16 字元，含大小寫、數字與 @ $ _ -";
+    return "密碼需 8-16 字元，含大小寫、數字與特殊符號（限定：@ $ _ -）";
   }
   return "";
 }
