@@ -1,0 +1,286 @@
+:root {
+  --ink: #111827;
+  --muted: #697386;
+  --soft: #f6faf7;
+  --surface: #ffffff;
+  --line: #e8edf3;
+  --mist: #e5f3ea;
+  --lavender: #ecebff;
+  --indigo: #6366f1;
+  --wellness: #5f9278;
+  --amber: #d49a3a;
+  --danger: #b44a42;
+  --shadow-calm: 0 12px 32px rgba(15, 23, 42, 0.1);
+  --shadow-float: 0 18px 46px rgba(99, 102, 241, 0.26);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  overflow-x: hidden;
+  background:
+    radial-gradient(circle at 18% 8%, rgba(236, 235, 255, 0.95), transparent 30%),
+    radial-gradient(circle at 88% 4%, rgba(229, 243, 234, 0.85), transparent 28%),
+    linear-gradient(135deg, #eef3ff 0%, #f6faf7 42%, #ffffff 100%);
+  color: var(--ink);
+}
+
+body.startup-active {
+  overflow: hidden;
+}
+
+body::before {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(circle at 42% 28%, rgba(255, 255, 255, 0.72), transparent 34%),
+    radial-gradient(circle at 60% 80%, rgba(229, 243, 234, 0.55), transparent 32%);
+  content: "";
+  opacity: 0.9;
+  animation: ambient-wash 16s ease-in-out infinite alternate;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button,
+a,
+select,
+textarea,
+input {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, color 0.2s ease, background 0.2s ease, transform 0.2s ease, opacity 0.2s ease;
+}
+
+.icon-glyph {
+  width: 1em;
+  height: 1em;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.transport-icon-img {
+  display: block;
+  width: 1.18em;
+  height: 1.18em;
+  flex: 0 0 auto;
+  object-fit: contain;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 2rem;
+  line-height: 1.05;
+  font-weight: 700;
+}
+
+h2 {
+  font-size: 1.2rem;
+  line-height: 1.2;
+}
+
+.app-shell {
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.app-shell.booting {
+  min-height: 100vh;
+}
+
+.app-surface {
+  position: relative;
+  width: min(1120px, 100%);
+  min-height: calc(100vh - 48px);
+  margin: 0 auto;
+  overflow: hidden;
+  border: 1px solid rgba(232, 237, 243, 0.9);
+  border-radius: 28px;
+  background: rgba(246, 250, 247, 0.86);
+  box-shadow: 0 28px 90px rgba(15, 23, 42, 0.14);
+  -webkit-backdrop-filter: blur(24px) saturate(1.12);
+  backdrop-filter: blur(24px) saturate(1.12);
+}
+
+.app-surface::before {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    linear-gradient(140deg, rgba(255, 255, 255, 0.42), transparent 42%),
+    radial-gradient(circle at 85% 18%, rgba(236, 235, 255, 0.54), transparent 20%);
+  content: "";
+  pointer-events: none;
+}
+
+.app-surface>* {
+  position: relative;
+  z-index: 1;
+}
+
+.startup-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 18px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 48% 38%, rgba(255, 255, 255, 0.92), transparent 24%),
+    radial-gradient(circle at 28% 26%, rgba(236, 235, 255, 0.74), transparent 30%),
+    radial-gradient(circle at 78% 70%, rgba(229, 243, 234, 0.72), transparent 32%),
+    linear-gradient(135deg, #f5f8ff 0%, #f8fbf8 52%, #ffffff 100%);
+}
+
+.startup-splash::before,
+.startup-splash::after {
+  position: absolute;
+  inset: auto -8% 20% -8%;
+  height: 110px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, rgba(95, 146, 120, 0.14), rgba(99, 102, 241, 0.12), transparent);
+  content: "";
+  opacity: 0.72;
+  transform: rotate(-6deg);
+  animation: startup-route-drift 3.8s ease-in-out infinite alternate;
+}
+
+.startup-splash::after {
+  inset: 20% -12% auto -12%;
+  height: 82px;
+  opacity: 0.36;
+  transform: rotate(8deg);
+  animation-delay: 0.5s;
+}
+
+.startup-icon {
+  position: relative;
+  z-index: 2;
+  width: clamp(112px, 16vw, 156px);
+  height: clamp(112px, 16vw, 156px);
+  object-fit: contain;
+  filter: drop-shadow(0 24px 48px rgba(99, 102, 241, 0.22));
+  animation:
+    startup-breathe 2.7s ease-in-out infinite,
+    startup-settle 1.8s cubic-bezier(0.2, 0.82, 0.2, 1) both;
+}
+
+.startup-orbit {
+  position: absolute;
+  z-index: 1;
+  width: clamp(190px, 26vw, 270px);
+  height: clamp(190px, 26vw, 270px);
+  border-radius: 50%;
+  opacity: 0.86;
+}
+
+.startup-ring,
+.startup-route,
+.startup-node {
+  position: absolute;
+  display: block;
+}
+
+.startup-ring {
+  inset: 18%;
+  border: 1px solid rgba(99, 102, 241, 0.14);
+  border-radius: 50%;
+  animation: startup-ring 3.2s ease-in-out infinite;
+}
+
+.startup-ring.two {
+  inset: 28%;
+  border-color: rgba(95, 146, 120, 0.14);
+  animation-delay: 0.7s;
+}
+
+.startup-route {
+  left: 8%;
+  right: 8%;
+  top: 53%;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, rgba(95, 146, 120, 0.32), rgba(99, 102, 241, 0.24), transparent);
+  transform: rotate(-10deg);
+  animation: startup-line 3s ease-in-out infinite;
+}
+
+.startup-node {
+  width: 11px;
+  height: 11px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+}
+
+.startup-node.a {
+  left: 22%;
+  top: 49%;
+  background: var(--indigo);
+  animation: startup-node 2.6s ease-in-out infinite;
+}
+
+.startup-node.b {
+  right: 19%;
+  top: 42%;
+  background: var(--wellness);
+  animation: startup-node 2.6s ease-in-out 0.5s infinite;
+}
+
+.startup-copy {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  gap: 6px;
+  text-align: center;
+  animation: startup-settle-copy 1.8s cubic-bezier(0.2, 0.82, 0.2, 1) both;
+}
+
+.startup-copy strong {
+  color: var(--ink);
+  font-size: 1rem;
+  letter-spacing: 0;
+  animation: startup-breathe 2.7s ease-in-out infinite;
+}
+
+.startup-copy span {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.splash-fade-enter-active,
+.splash-fade-leave-active {
+  transition: opacity 0.55s ease, filter 0.55s ease;
+}
+
+.splash-fade-enter-from,
+.splash-fade-leave-to {
+  opacity: 0;
+  filter: blur(10px);
+}
+

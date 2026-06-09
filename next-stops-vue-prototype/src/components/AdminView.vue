@@ -125,7 +125,6 @@ onMounted(async () => {
 <template>
   <main class="screen admin-screen">
     <header class="screen-header">
-      <button class="back-button" type="button" @click="emit('navigate', '/')">‹</button>
       <div>
         <p class="muted">Internal ops</p>
         <h1>Admin</h1>

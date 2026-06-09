@@ -165,7 +165,6 @@ watch(() => props.user, () => {
 <template>
   <main class="screen profile-screen">
     <header class="screen-header">
-      <button class="back-button" type="button" @click="emit('navigate', '/')">‹</button>
       <div>
         <p class="muted">Account</p>
         <h1>Profile</h1>

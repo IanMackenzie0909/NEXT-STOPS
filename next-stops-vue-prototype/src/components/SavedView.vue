@@ -6,7 +6,6 @@ const emit = defineEmits(["navigate", "remove", "update-note"]);
 <template>
   <main class="screen saved-screen">
     <header class="screen-header">
-      <button class="back-button" type="button" @click="emit('navigate', '/')">‹</button>
       <div>
         <p class="muted">Today plan</p>
         <h1>Saved stops</h1>

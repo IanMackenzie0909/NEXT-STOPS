@@ -93,6 +93,8 @@ const routeName = computed(() => {
 });
 const activePlaceId = computed(() => route.value.startsWith("/place/") ? decodeURIComponent(route.value.replace("/place/", "")) : "");
 const savedIds = computed(() => saved.value.map((item) => item.id));
+const showBackButton = computed(() => !booting.value && (routeName.value === "admin" || ["detail", "results", "saved", "profile"].includes(routeName.value)));
+const backTarget = computed(() => routeName.value === "detail" ? "/results" : "/");
 
 function navigate(path) {
   const target = path || "/";
@@ -108,6 +110,10 @@ function handleNavigate(path) {
     return;
   }
   navigate(path);
+}
+
+function goBack() {
+  navigate(backTarget.value);
 }
 
 function updateCriteria(updates) {
@@ -582,6 +588,15 @@ function handleVisibilityChange() {
         />
       </Transition>
     </div>
+    <button
+      v-if="showBackButton"
+      class="back-button app-back-button"
+      type="button"
+      aria-label="返回"
+      @click="goBack"
+    >
+      ‹
+    </button>
     <button
       v-if="!booting"
       class="ambient-toggle"

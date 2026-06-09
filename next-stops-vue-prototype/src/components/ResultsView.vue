@@ -39,7 +39,6 @@ function placeAqiChip(place) {
 <template>
   <main class="screen results-screen">
     <header class="screen-header">
-      <button class="back-button" type="button" @click="emit('navigate', '/')">‹</button>
       <div>
         <p class="muted">{{ criteria.locationLabel || LOCATION_FALLBACK_LABEL }} 出發</p>
         <h1>{{ MOODS.find((item) => item.id === criteria.mood)?.label || "推薦" }}</h1>

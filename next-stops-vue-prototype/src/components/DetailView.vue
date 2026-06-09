@@ -279,7 +279,6 @@ watch(() => props.placeId, () => {
 
     <template v-else-if="place">
       <header class="screen-header">
-        <button class="back-button" type="button" @click="emit('navigate', '/results')">‹</button>
         <div>
           <p class="muted">MATCH SCORE {{ place.score }}%</p>
           <h1>{{ place.name }}</h1>
