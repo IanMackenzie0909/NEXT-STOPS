@@ -1,6 +1,6 @@
-@import "./styles/01-foundation.css";
-@import "./styles/02-shell-background.css";
-@import "./styles/03-controls-cards.css";
-@import "./styles/04-auth-profile-admin.css";
-@import "./styles/05-detail-saved-loading.css";
-@import "./styles/06-motion-nav-responsive.css";
+@import "./styles/foundation.css";
+@import "./styles/shell-background.css";
+@import "./styles/controls-cards.css";
+@import "./styles/auth-profile-admin.css";
+@import "./styles/detail-saved-loading.css";
+@import "./styles/motion-nav-responsive.css";
