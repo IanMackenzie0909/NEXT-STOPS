@@ -8,6 +8,10 @@ export const MOODS = [
 ];
 
 export const LOCATION_FALLBACK_LABEL = "台北車站";
+export const LOCATION_FALLBACK_COORDS = {
+  lat: 25.0478,
+  lon: 121.517,
+};
 
 export const WEATHER_LABELS = {
   any: "戶外也可以",

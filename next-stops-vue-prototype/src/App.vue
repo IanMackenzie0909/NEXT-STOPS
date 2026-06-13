@@ -27,7 +27,7 @@ import {
   updateUserProfile,
   updateUserPreferences,
 } from "./api/nextStopsApi";
-import { LOCATION_FALLBACK_LABEL } from "./constants";
+import { LOCATION_FALLBACK_COORDS, LOCATION_FALLBACK_LABEL } from "./constants";
 import appIconImage from "./assets/APP_ICON.png";
 import bgmTimeToTime from "../BGM/ES_Time to Time - Helmut Schenker.mp3";
 import bgmSoftWeight from "../BGM/ES_Soft Weight of Slow Desire - Jay Taylor.mp3";
@@ -43,8 +43,8 @@ const criteria = reactive({
   location: "taipei_main",
   locationLabel: LOCATION_FALLBACK_LABEL,
   locationSource: "fallback",
-  lat: null,
-  lon: null,
+  lat: LOCATION_FALLBACK_COORDS.lat,
+  lon: LOCATION_FALLBACK_COORDS.lon,
   weatherPreference: "any",
   budget: "medium",
   transportModes: [],
@@ -150,8 +150,8 @@ function locateUser() {
       location: "taipei_main",
       locationLabel: LOCATION_FALLBACK_LABEL,
       locationSource: "fallback",
-      lat: null,
-      lon: null,
+      lat: LOCATION_FALLBACK_COORDS.lat,
+      lon: LOCATION_FALLBACK_COORDS.lon,
     });
     return Promise.resolve(false);
   }
@@ -180,8 +180,8 @@ function locateUser() {
           location: "taipei_main",
           locationLabel: LOCATION_FALLBACK_LABEL,
           locationSource: "fallback",
-          lat: null,
-          lon: null,
+          lat: LOCATION_FALLBACK_COORDS.lat,
+          lon: LOCATION_FALLBACK_COORDS.lon,
         });
         resolve(false);
       },
@@ -198,7 +198,8 @@ async function findStops() {
   results.value = [];
   navigate("/results");
   try {
-    if (criteria.locationSource === "fallback") await locateUser();
+    // Do not request browser geolocation here. The fallback origin is Taipei Main Station,
+    // and GPS may only be used after the user explicitly presses "Use location".
     const data = await getRecommendations({ ...criteria });
     latestRequestId.value = data.request_id || "";
     results.value = data.results || [];

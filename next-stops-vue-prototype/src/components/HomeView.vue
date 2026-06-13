@@ -2,7 +2,7 @@
 import { computed, ref } from "vue";
 import AppIcon from "./AppIcon.vue";
 import TransportIcon from "./TransportIcon.vue";
-import { BUDGET_LABELS, LOCATION_FALLBACK_LABEL, MOODS, TRANSPORT_MODES, WEATHER_LABELS } from "../constants";
+import { BUDGET_LABELS, LOCATION_FALLBACK_COORDS, LOCATION_FALLBACK_LABEL, MOODS, TRANSPORT_MODES, WEATHER_LABELS } from "../constants";
 import { formatTime } from "../utils/formatters";
 
 const props = defineProps({
@@ -69,8 +69,8 @@ function useFallbackLocation() {
     location: "taipei_main",
     locationLabel: LOCATION_FALLBACK_LABEL,
     locationSource: "fallback",
-    lat: null,
-    lon: null,
+    lat: LOCATION_FALLBACK_COORDS.lat,
+    lon: LOCATION_FALLBACK_COORDS.lon,
   });
 }
 </script>
