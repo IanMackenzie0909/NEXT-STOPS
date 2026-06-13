@@ -551,6 +551,29 @@
   margin-top: 0;
 }
 
+.action-row .save-today-action {
+  transition: background 0.22s ease, box-shadow 0.22s ease, color 0.22s ease, transform 0.22s ease;
+}
+
+.action-row .save-today-action .icon-glyph {
+  width: 18px;
+  height: 18px;
+  stroke-width: 2.7;
+}
+
+.action-row .save-today-action.saved {
+  border: 1px solid rgba(95, 146, 120, 0.28);
+  background:
+    linear-gradient(135deg, rgba(95, 146, 120, 0.18), rgba(229, 243, 234, 0.96)),
+    #e5f3ea;
+  color: #477861;
+  box-shadow: 0 14px 32px rgba(95, 146, 120, 0.16);
+}
+
+.action-row .save-today-action.saved .icon-glyph {
+  color: #477861;
+}
+
 .detail-sidebar .ghost-action {
   min-width: 116px;
 }

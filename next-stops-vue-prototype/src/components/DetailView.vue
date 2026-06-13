@@ -430,9 +430,9 @@ watch(() => props.placeId, () => {
         </section>
 
         <div class="action-row">
-          <button class="primary-action" type="button" @click="emit('toggle-save', place)">
-            <IconGlyph name="plus" />
-            <span>{{ saved ? "Saved today" : "Add to today" }}</span>
+          <button class="primary-action save-today-action" :class="{ saved }" type="button" @click="emit('toggle-save', place)">
+            <IconGlyph :name="saved ? 'check' : 'plus'" />
+            <span>{{ saved ? "In today plan" : "Add to today" }}</span>
           </button>
           <a class="ghost-action map-action" target="_blank" rel="noreferrer" :href="mapsUrl">
             <IconGlyph name="map" />

@@ -108,6 +108,9 @@ defineProps({
       <path d="M12 5v14"></path>
       <path d="M5 12h14"></path>
     </g>
+    <g v-else-if="name === 'check'">
+      <path d="M20 6L9 17l-5-5"></path>
+    </g>
     <g v-else-if="name === 'spark'">
       <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z"></path>
       <path d="M18 16l.8 2.2L21 19l-2.2.8L18 22l-.8-2.2L15 19l2.2-.8L18 16z"></path>
