@@ -32,6 +32,12 @@
   background-size: auto, 26px 26px, 26px 26px;
 }
 
+.mapbox-route .mapboxgl-canvas-container,
+.mapbox-route .mapboxgl-canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
 .map-route-status {
   position: static;
   display: flex;

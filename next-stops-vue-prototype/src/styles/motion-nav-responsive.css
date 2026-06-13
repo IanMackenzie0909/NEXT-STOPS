@@ -359,7 +359,7 @@ input:focus-visible {
     grid-template-columns: minmax(430px, 1fr) minmax(330px, 0.78fr);
     gap: 18px;
     align-content: start;
-    align-items: start;
+    align-items: stretch;
     max-width: 1040px;
     margin: 0 auto;
   }
@@ -369,8 +369,8 @@ input:focus-visible {
   }
 
   .detail-map-card {
-    align-self: start;
-    height: min(680px, calc(100vh - 188px));
+    align-self: stretch;
+    height: auto;
     margin-top: 0;
     min-height: min(680px, calc(100vh - 188px));
   }
