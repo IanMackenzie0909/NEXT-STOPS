@@ -381,6 +381,10 @@ input:focus-visible {
     min-height: min(420px, calc(100vh - 200px));
   }
 
+  .detail-screen > .detail-loading-state {
+    grid-column: 1 / -1;
+  }
+
   .mapbox-route {
     min-height: 0;
   }

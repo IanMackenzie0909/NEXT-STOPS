@@ -301,8 +301,34 @@ watch(() => props.placeId, () => {
 
 <template>
   <main class="screen detail-screen">
-    <div v-if="loading && !place" class="empty-state">
-      <h2>Loading...</h2>
+    <div v-if="loading && !place" class="loading-state detail-loading-state" role="status" aria-live="polite">
+      <div class="loading-visual" aria-hidden="true">
+        <div class="loader-calm">
+          <span class="calm-ring one"></span>
+          <span class="calm-ring two"></span>
+          <span class="calm-dot main"></span>
+          <span class="calm-dot drift"></span>
+          <span class="calm-path"></span>
+        </div>
+        <div class="route-preview">
+          <span class="route-thread"></span>
+          <span class="node start"></span>
+          <span class="node mid"></span>
+          <span class="node end"></span>
+        </div>
+        <div class="loading-card-stack">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+      </div>
+      <h2>正在整理地點細節</h2>
+      <p>載入路線、營業狀態與即時環境資料。</p>
+      <div class="loading-steps">
+        <span>地點資料</span>
+        <span>通勤路線</span>
+        <span>即時狀態</span>
+      </div>
     </div>
 
     <template v-else-if="place">

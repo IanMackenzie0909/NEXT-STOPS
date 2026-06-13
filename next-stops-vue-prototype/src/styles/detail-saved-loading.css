@@ -601,6 +601,32 @@
   text-align: center;
 }
 
+.detail-loading-state {
+  width: min(720px, 100%);
+  min-height: min(620px, calc(100vh - 190px));
+  align-content: center;
+  justify-items: center;
+  margin: 22px auto 0;
+  padding: clamp(34px, 7vw, 72px) clamp(24px, 6vw, 64px);
+}
+
+.detail-loading-state .loading-visual {
+  width: min(460px, 100%);
+  min-height: 190px;
+  margin-bottom: 24px;
+}
+
+.detail-loading-state h2 {
+  margin: 0;
+}
+
+.detail-loading-state p {
+  margin: 10px auto 0;
+  color: var(--muted);
+  font-weight: 750;
+  line-height: 1.65;
+}
+
 .loading-visual {
   position: relative;
   width: min(420px, 100%);
