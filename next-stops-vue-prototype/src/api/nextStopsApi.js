@@ -84,6 +84,10 @@ export function getAdminSummary() {
   return fetchAdmin("/api/admin/summary");
 }
 
+export function getAdminOverview() {
+  return fetchAdmin("/api/admin/overview");
+}
+
 export function getAdminUsers() {
   return fetchAdmin("/api/admin/users");
 }

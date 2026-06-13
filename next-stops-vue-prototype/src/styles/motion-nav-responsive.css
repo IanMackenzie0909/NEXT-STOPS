@@ -499,9 +499,25 @@ input:focus-visible {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .admin-relationship-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-metric-list {
+    grid-template-columns: 1fr;
+  }
+
   .admin-row {
     display: grid;
     align-items: stretch;
+  }
+
+  .admin-row-rich {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-row-metrics {
+    margin-top: 4px;
   }
 
   .favorite-start-form,
