@@ -568,6 +568,15 @@
   text-align: center;
 }
 
+.detail-screen > .empty-state {
+  display: grid;
+  width: min(560px, 100%);
+  min-height: min(360px, calc(100vh - 220px));
+  place-items: center;
+  margin: 34px auto 0;
+  padding: 32px;
+}
+
 .empty-secondary {
   width: 100%;
   margin-top: 10px;

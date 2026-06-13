@@ -359,6 +359,7 @@ input:focus-visible {
     grid-template-columns: minmax(430px, 1fr) minmax(330px, 0.78fr);
     gap: 18px;
     align-content: start;
+    align-items: start;
     max-width: 1040px;
     margin: 0 auto;
   }
@@ -368,8 +369,16 @@ input:focus-visible {
   }
 
   .detail-map-card {
+    align-self: start;
+    height: min(680px, calc(100vh - 188px));
     margin-top: 0;
     min-height: min(680px, calc(100vh - 188px));
+  }
+
+  .detail-screen > .empty-state {
+    grid-column: 1 / -1;
+    width: min(640px, 100%);
+    min-height: min(420px, calc(100vh - 200px));
   }
 
   .mapbox-route {
@@ -510,6 +519,25 @@ input:focus-visible {
   .admin-row {
     display: grid;
     align-items: stretch;
+  }
+
+  .admin-row b,
+  .admin-row span,
+  .admin-row small {
+    min-width: 0;
+    overflow: visible;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+    white-space: normal;
+    word-break: break-word;
+  }
+
+  .admin-panel-head {
+    align-items: flex-start;
+  }
+
+  .admin-panel-head small {
+    text-align: left;
   }
 
   .admin-row-rich {

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { getContext, getMapboxConfig, getPlace, getRoute, googleDirectionsUrl } from "../api/nextStopsApi";
 import IconGlyph from "./IconGlyph.vue";
 import TransportIcon from "./TransportIcon.vue";
@@ -66,6 +66,7 @@ const mapsUrl = computed(() => googleDirectionsUrl(origin.value, place.value || 
 let map;
 let originMarker;
 let destinationMarker;
+let mapResizeObserver;
 
 function lngLatFromPoint(point) {
   if (!point) return null;
@@ -120,6 +121,7 @@ function renderMapRoute(route) {
     mapStatus.value = "路線資料尚未就緒";
     return;
   }
+  map.resize();
   const start = route.origin;
   const end = route.destination;
   const startLngLat = lngLatFromPoint(start);
@@ -188,6 +190,15 @@ function renderMapRoute(route) {
   mapStatus.value = "已依最短通勤時間繪製路線";
 }
 
+function observeMapSize() {
+  if (!mapContainer.value || mapResizeObserver || !globalThis.ResizeObserver) return;
+  mapResizeObserver = new globalThis.ResizeObserver(() => {
+    if (!map) return;
+    requestAnimationFrame(() => map?.resize());
+  });
+  mapResizeObserver.observe(mapContainer.value);
+}
+
 async function loadRouteMap() {
   routeData.value = null;
   if (!origin.value || !destination.value) {
@@ -204,6 +215,7 @@ async function loadRouteMap() {
 
   await nextTick();
   if (!mapContainer.value) return;
+  observeMapSize();
   try {
     const config = await getMapboxConfig();
     if (!config.configured || !config.access_token) {
@@ -262,6 +274,22 @@ async function loadPlace() {
 }
 
 onMounted(loadPlace);
+onBeforeUnmount(() => {
+  mapResizeObserver?.disconnect();
+  mapResizeObserver = null;
+  originMarker?.remove();
+  destinationMarker?.remove();
+  map?.remove();
+  originMarker = null;
+  destinationMarker = null;
+  map = null;
+});
+
+watch(descriptionExpanded, async () => {
+  await nextTick();
+  map?.resize();
+});
+
 watch(() => props.placeId, () => {
   place.value = props.fallbackPlace;
   context.value = null;

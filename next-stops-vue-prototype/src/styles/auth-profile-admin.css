@@ -358,6 +358,14 @@
   gap: 12px;
   margin-top: 16px;
   box-shadow: var(--shadow-calm);
+  min-width: 0;
+}
+
+.admin-panel p {
+  max-width: 100%;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .admin-stack {
@@ -482,14 +490,25 @@
 .admin-category-list {
   display: flex;
   flex-wrap: wrap;
+  align-items: flex-start;
   gap: 8px;
 }
 
 .admin-category-list span {
+  display: inline-flex;
+  width: auto;
+  max-width: 100%;
+  min-height: 30px;
+  align-items: center;
   border-radius: 999px;
   background: #f1f5f9;
   color: var(--muted);
   padding: 6px 10px;
   font-size: 0.78rem;
   font-weight: 850;
+  line-height: 1.25;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
 }
