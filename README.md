@@ -38,15 +38,15 @@ Instead of asking users to manually compare maps, weather, AQI, route planning, 
 
 ## Tech Stack
 
-| Layer | Technology |
-| --- | --- |
-| Frontend | Vue 3, Vite |
-| Backend | FastAPI, Uvicorn |
-| Recommendation | Python recommendation engine in `algorithm.py` |
-| Database | PostgreSQL in production, SQLite fallback locally |
-| Maps and Routes | Mapbox, Google Maps / Routes / Places |
-| External data | CWA Weather, MOENV AQI, TDX, Geoapify, Foursquare, OpenTripMap |
-| Deployment target | Cloudflare Pages frontend, Render backend and PostgreSQL |
+| Layer             | Technology                                                     |
+| ----------------- | -------------------------------------------------------------- |
+| Frontend          | Vue 3, Vite                                                    |
+| Backend           | FastAPI, Uvicorn                                               |
+| Recommendation    | Python recommendation engine in `algorithm.py`                 |
+| Database          | PostgreSQL in production, SQLite fallback locally              |
+| Maps and Routes   | Mapbox, Google Maps / Routes / Places                          |
+| External data     | CWA Weather, MOENV AQI, TDX, Geoapify, Foursquare, OpenTripMap |
+| Deployment target | Cloudflare Pages frontend, Render backend and PostgreSQL       |
 
 ## Quick Start
 
@@ -135,7 +135,7 @@ env/bin/python tests/test_api_security.py
 ## Documentation
 
 - [Instruction.md](Instruction.md): formal installation, configuration, deployment, and maintenance guide
-- [NEXT_STOPS_Developer_Documentation.md](NEXT_STOPS_Developer_Documentation.md): product and architecture notes
+- [Attraction Instruction.md](tdx-dashboard-prototype/taipei_attraction_search_platform/Attraction_Instruction.md): Attractions quick installation and API setup.
 
 ## Repository Layout
 
