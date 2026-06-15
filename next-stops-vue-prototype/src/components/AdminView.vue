@@ -33,6 +33,7 @@ const feedback = computed(() => overview.value?.feedback || []);
 const saved = computed(() => overview.value?.saved || []);
 const places = computed(() => overview.value?.places || []);
 const placeCache = computed(() => overview.value?.place_cache || {});
+const security = computed(() => overview.value?.security || {});
 const providerBreakdown = computed(() => overview.value?.breakdowns?.providers || []);
 const feedbackBreakdown = computed(() => overview.value?.breakdowns?.feedback_types || []);
 
@@ -354,6 +355,26 @@ onMounted(async () => {
             <span v-for="item in placeCache.top_categories || []" :key="item.category">
               {{ item.category }} {{ item.count }}
             </span>
+          </div>
+        </section>
+
+        <section class="admin-panel">
+          <div class="admin-panel-head">
+            <strong>安全防護</strong>
+            <small>CSRF / XSS / abuse protection / rate limit</small>
+          </div>
+          <p>CSRF：{{ security.csrf?.strategy || "unknown" }}</p>
+          <p>Admin token：{{ security.admin?.token_mode || "unknown" }}，query token：{{ security.admin?.query_token_allowed ? "enabled" : "disabled" }}</p>
+          <p>Max body：{{ security.abuse_protection?.max_body_bytes || 0 }} bytes</p>
+          <div class="admin-category-list">
+            <span>XSS headers {{ security.xss?.security_headers ? "on" : "off" }}</span>
+            <span>JSON-only {{ security.abuse_protection?.json_only_unsafe_methods ? "on" : "off" }}</span>
+            <span v-for="(value, key) in security.abuse_protection?.rate_limits || {}" :key="key">
+              {{ key }} {{ value }}
+            </span>
+          </div>
+          <div class="admin-category-list">
+            <span v-for="origin in security.csrf?.trusted_origins || []" :key="origin">{{ origin }}</span>
           </div>
         </section>
 

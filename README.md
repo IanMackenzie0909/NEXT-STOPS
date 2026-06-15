@@ -76,7 +76,10 @@ Important variables live in the root `.env`.
 
 - `DATABASE_URL`: PostgreSQL connection string for deployment
 - `NEXT_STOPS_CORS_ORIGINS`: allowed frontend origins, for example Cloudflare Pages and local Vite URLs
-- `ADMIN_TOKEN`: token for the internal admin page
+- `NEXT_STOPS_TRUSTED_ORIGINS`: origins allowed to send unsafe API requests
+- `NEXT_STOPS_MAX_BODY_BYTES`: API request body size limit
+- `NEXT_STOPS_RATE_LIMIT_DEFAULT`, `NEXT_STOPS_RATE_LIMIT_AUTH`, `NEXT_STOPS_RATE_LIMIT_ADMIN`, `NEXT_STOPS_RATE_LIMIT_RECOMMEND`, `NEXT_STOPS_RATE_LIMIT_BUILD`: API abuse and rate-limit settings
+- `ADMIN_TOKEN` or `ADMIN_TOKEN_SHA256`: token for the internal admin page. `ADMIN_TOKEN_SHA256` is preferred for deployment
 - `GOOGLE_CLIENT_ID` / `VITE_GOOGLE_CLIENT_ID`: Google OAuth client ID
 - `GOOGLE_MAPS_SERVER_KEY` or `GOOGLE_MAPS_API_KEY`: route, geocoding, and Places data
 - `MAPBOX_ACCESS_TOKEN`: frontend map rendering
@@ -122,8 +125,17 @@ Cloudflare Pages settings:
 Backend deploy settings:
 
 - Start command: `uvicorn tdx-dashboard-prototype.api_app:app --host 0.0.0.0 --port $PORT`
-- Set `DATABASE_URL`, `NEXT_STOPS_CORS_ORIGINS`, API keys, Google keys, Mapbox token, and `ADMIN_TOKEN`
+- Set `DATABASE_URL`, `NEXT_STOPS_CORS_ORIGINS`, `NEXT_STOPS_TRUSTED_ORIGINS`, API keys, Google keys, Mapbox token, and `ADMIN_TOKEN_SHA256`
 - Add deployed frontend URL to Google OAuth Authorized JavaScript origins
+
+Security protections currently enabled in FastAPI:
+
+- unsafe request origin guard for CSRF-style browser abuse
+- JSON-only unsafe methods
+- request body size limit
+- in-memory rate limiting by client IP and endpoint group
+- security headers for API responses
+- admin token only through `X-Admin-Token`; URL query tokens are rejected
 
 ## Verification
 
@@ -138,6 +150,12 @@ Backend syntax check:
 
 ```bash
 env/bin/python -m py_compile tdx-dashboard-prototype/api_app.py algorithm.py
+```
+
+Security checks:
+
+```bash
+env/bin/python tests/test_api_security.py
 ```
 
 Common ports:

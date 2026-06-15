@@ -19,9 +19,11 @@ import sys
 import threading
 import time
 import uuid
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 
@@ -33,8 +35,9 @@ except ImportError:  # pragma: no cover - PostgreSQL is optional for local SQLit
     dict_row = None
 
 try:
-    from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
+    from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
     from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import JSONResponse
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("請先安裝 FastAPI dependencies：pip install -r requirements.txt") from exc
 
@@ -61,6 +64,10 @@ DEFAULT_MAPBOX_TOKEN = "your_mapbox_access_token"
 MAX_STATION_RESULTS = 300
 TDX_REQUEST_RETRIES = 2
 ROUTE_COMPARE_MODES = ("CAR", "BUS", "MRT", "MOTORCYCLE", "WALKING", "BICYCLE")
+UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+DEFAULT_MAX_BODY_BYTES = 256 * 1024
+RATE_LIMIT_STORE: dict[str, deque[float]] = defaultdict(deque)
+RATE_LIMIT_LOCK = threading.Lock()
 
 SAMPLE_LOCATIONS = [
     {"name": "臺北車站", "lat": 25.0478, "lon": 121.5170},
@@ -200,6 +207,19 @@ def env_first(*names: str, default: str = "") -> str:
     return default
 
 
+def env_int(name: str, default: int, minimum: int = 0, maximum: int | None = None) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        value = default
+    value = max(minimum, value)
+    return min(value, maximum) if maximum is not None else value
+
+
+def split_env_list(value: str) -> list[str]:
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+
 def load_module(module_name: str, filename: str):
     module_path = ROOT / filename
     return load_module_from_path(module_name, module_path)
@@ -233,17 +253,141 @@ except ImportError as exc:  # pragma: no cover
     raise RuntimeError("Cannot import Taipei attraction search service") from exc
 
 
+def configured_cors_origins() -> list[str]:
+    return split_env_list(os.getenv(
+        "NEXT_STOPS_CORS_ORIGINS",
+        "http://127.0.0.1:5174,http://localhost:5174",
+    ))
+
+
 app = FastAPI(title="NEXT STOPS Data API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv(
-        "NEXT_STOPS_CORS_ORIGINS",
-        "http://127.0.0.1:5174,http://localhost:5174",
-    ).split(","),
+    allow_origins=configured_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def normalized_origin(value: str | None) -> str:
+    parsed = urlparse(str(value or "").strip())
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+
+
+def allowed_browser_origins() -> set[str]:
+    origins = set()
+    for value in configured_cors_origins() + split_env_list(os.getenv("NEXT_STOPS_TRUSTED_ORIGINS", "")):
+        normalized = normalized_origin(value)
+        if normalized:
+            origins.add(normalized)
+    return origins
+
+
+def request_origin(request: Request) -> str:
+    origin = normalized_origin(request.headers.get("origin"))
+    if origin:
+        return origin
+    return normalized_origin(request.headers.get("referer"))
+
+
+def client_ip(request: Request) -> str:
+    cf_ip = request.headers.get("cf-connecting-ip")
+    if cf_ip:
+        return cf_ip.strip()
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",", 1)[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def rate_limit_for_path(path: str) -> tuple[int, int, str]:
+    if path.startswith("/api/admin"):
+        return env_int("NEXT_STOPS_RATE_LIMIT_ADMIN", 30, minimum=1), 60, "admin"
+    if path.startswith("/api/auth"):
+        return env_int("NEXT_STOPS_RATE_LIMIT_AUTH", 12, minimum=1), 60, "auth"
+    if path in {"/api/recommend", "/api/recommendations", "/api/route"}:
+        return env_int("NEXT_STOPS_RATE_LIMIT_RECOMMEND", 30, minimum=1), 60, "recommend"
+    if path in {"/api/places/build", "/api/admin/places/rebuild"}:
+        return env_int("NEXT_STOPS_RATE_LIMIT_BUILD", 3, minimum=1), 3600, "build"
+    return env_int("NEXT_STOPS_RATE_LIMIT_DEFAULT", 180, minimum=1), 60, "default"
+
+
+def check_rate_limit(request: Request) -> tuple[bool, int, int, str]:
+    limit, window_seconds, bucket = rate_limit_for_path(request.url.path)
+    if limit <= 0:
+        return True, 0, window_seconds, bucket
+    now = time.monotonic()
+    key = f"{client_ip(request)}:{bucket}"
+    with RATE_LIMIT_LOCK:
+        hits = RATE_LIMIT_STORE[key]
+        while hits and hits[0] <= now - window_seconds:
+            hits.popleft()
+        if len(hits) >= limit:
+            retry_after = max(1, int(window_seconds - (now - hits[0])))
+            return False, retry_after, window_seconds, bucket
+        hits.append(now)
+    return True, 0, window_seconds, bucket
+
+
+def security_headers_for(path: str) -> dict[str, str]:
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Permissions-Policy": "geolocation=(), microphone=(), camera=(), payment=()",
+        "Cache-Control": "no-store" if path.startswith(("/api/auth", "/api/admin")) else "private, max-age=30",
+    }
+    if path not in {"/docs", "/redoc", "/openapi.json"}:
+        headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+    if os.getenv("NEXT_STOPS_ENABLE_HSTS", "").lower() in {"1", "true", "yes"}:
+        headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return headers
+
+
+def protected_error(status_code: int, detail: str, headers: dict[str, str] | None = None) -> JSONResponse:
+    return JSONResponse({"detail": detail}, status_code=status_code, headers=headers or {})
+
+
+def unsafe_request_rejection(request: Request, body_size: int) -> tuple[int, str] | None:
+    origin = request_origin(request)
+    allowed_origins = allowed_browser_origins()
+    if origin and origin not in allowed_origins:
+        return 403, "Request origin is not allowed"
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if body_size > 0 and content_type != "application/json":
+        return 415, "Only application/json requests are accepted"
+    return None
+
+
+@app.middleware("http")
+async def api_abuse_protection(request: Request, call_next):
+    path = request.url.path
+    max_body = env_int("NEXT_STOPS_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES, minimum=1024)
+    content_length = request.headers.get("content-length")
+    try:
+        body_size = int(content_length or "0")
+    except ValueError:
+        body_size = max_body + 1
+    if body_size > max_body:
+        response = protected_error(413, "Request body too large")
+    else:
+        allowed, retry_after, _window, _bucket = check_rate_limit(request)
+        if not allowed:
+            response = protected_error(429, "Too many requests", {"Retry-After": str(retry_after)})
+        elif request.method in UNSAFE_METHODS:
+            rejection = unsafe_request_rejection(request, body_size)
+            if rejection:
+                response = protected_error(rejection[0], rejection[1])
+            else:
+                response = await call_next(request)
+        else:
+            response = await call_next(request)
+    for key, value in security_headers_for(path).items():
+        response.headers.setdefault(key, value)
+    return response
 
 
 class CachedTDX:
@@ -477,12 +621,19 @@ def require_current_user(authorization: str | None) -> dict[str, Any]:
     return user
 
 
-def require_admin(x_admin_token: str | None = Header(default=None), token: str | None = Query(default=None)) -> None:
+def require_admin(x_admin_token: str | None = Header(default=None)) -> None:
+    supplied = str(x_admin_token or "").strip()
     expected = os.getenv("ADMIN_TOKEN", "").strip()
-    supplied = str(x_admin_token or token or "").strip()
-    if not expected:
-        raise HTTPException(status_code=503, detail="ADMIN_TOKEN 尚未設定")
-    if not supplied or not hmac.compare_digest(supplied, expected):
+    expected_sha256 = os.getenv("ADMIN_TOKEN_SHA256", "").strip().lower()
+    if not expected and not expected_sha256:
+        raise HTTPException(status_code=503, detail="ADMIN_TOKEN 或 ADMIN_TOKEN_SHA256 尚未設定")
+    if not supplied:
+        raise HTTPException(status_code=401, detail="Admin token 不正確")
+    supplied_ok = bool(expected and hmac.compare_digest(supplied, expected))
+    if expected_sha256:
+        supplied_hash = hashlib.sha256(supplied.encode("utf-8")).hexdigest()
+        supplied_ok = supplied_ok or hmac.compare_digest(supplied_hash, expected_sha256)
+    if not supplied_ok:
         raise HTTPException(status_code=401, detail="Admin token 不正確")
 
 
@@ -1880,6 +2031,35 @@ def scalar_count(db, table: str) -> int:
     return int(row["count"] if isinstance(row, dict) else row["count"])
 
 
+def security_summary() -> dict[str, Any]:
+    return {
+        "csrf": {
+            "strategy": "authorization-header-with-origin-guard",
+            "trusted_origins": sorted(allowed_browser_origins()),
+            "unsafe_methods": sorted(UNSAFE_METHODS),
+        },
+        "xss": {
+            "security_headers": True,
+            "content_security_policy": "api-default-src-none",
+        },
+        "abuse_protection": {
+            "max_body_bytes": env_int("NEXT_STOPS_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES, minimum=1024),
+            "json_only_unsafe_methods": True,
+            "rate_limits": {
+                "default_per_minute": env_int("NEXT_STOPS_RATE_LIMIT_DEFAULT", 180, minimum=1),
+                "auth_per_minute": env_int("NEXT_STOPS_RATE_LIMIT_AUTH", 12, minimum=1),
+                "admin_per_minute": env_int("NEXT_STOPS_RATE_LIMIT_ADMIN", 30, minimum=1),
+                "recommend_per_minute": env_int("NEXT_STOPS_RATE_LIMIT_RECOMMEND", 30, minimum=1),
+                "build_per_hour": env_int("NEXT_STOPS_RATE_LIMIT_BUILD", 3, minimum=1),
+            },
+        },
+        "admin": {
+            "token_mode": "sha256" if os.getenv("ADMIN_TOKEN_SHA256", "").strip() else ("plain" if os.getenv("ADMIN_TOKEN", "").strip() else "unset"),
+            "query_token_allowed": False,
+        },
+    }
+
+
 def admin_summary() -> dict[str, Any]:
     init_recommendation_db()
     with connect_recommendation_db() as db:
@@ -1904,6 +2084,7 @@ def admin_summary() -> dict[str, Any]:
             "cache_exists": ATTRACTION_CACHE.exists(),
         },
         "api": {"status": "ok", "time": now_iso()},
+        "security": security_summary(),
     }
 
 
@@ -2282,6 +2463,7 @@ def admin_overview(limit: int = 80) -> dict[str, Any]:
         "places": places,
         "place_cache": places_summary,
         "api": {"status": "ok", "time": now_iso()},
+        "security": security_summary(),
     }
 
 
@@ -3045,8 +3227,9 @@ def api_auth_profile(payload: dict[str, Any] | None = Body(default=None), author
 
 
 @app.post("/api/auth/logout")
-def api_auth_logout(authorization: str | None = Header(default=None), token: str | None = Query(default=None)):
-    return run_or_raise(lambda: logout_auth_session(authorization or token or ""))
+def api_auth_logout(payload: dict[str, Any] | None = Body(default=None), authorization: str | None = Header(default=None)):
+    data = payload or {}
+    return run_or_raise(lambda: logout_auth_session(authorization or str(data.get("token") or "")))
 
 
 @app.delete("/api/auth/account")

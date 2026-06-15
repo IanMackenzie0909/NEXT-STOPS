@@ -112,7 +112,9 @@ function ensureMarkers(startLngLat, endLngLat) {
 function markerElement(label, kind) {
   const el = document.createElement("div");
   el.className = `route-marker ${kind}`;
-  el.innerHTML = `<span>${label}</span>`;
+  const text = document.createElement("span");
+  text.textContent = label;
+  el.appendChild(text);
   return el;
 }
 

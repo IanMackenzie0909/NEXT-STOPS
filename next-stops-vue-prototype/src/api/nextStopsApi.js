@@ -228,10 +228,10 @@ export function logoutOnPageClose() {
     return;
   }
   try {
-    const payload = new Blob([JSON.stringify({})], { type: "application/json" });
-    const url = `${DATA_API_BASE}/api/auth/logout?token=${encodeURIComponent(auth.token)}`;
+    const payload = new Blob([JSON.stringify({ token: auth.token })], { type: "application/json" });
+    const url = `${DATA_API_BASE}/api/auth/logout`;
     if (!navigator.sendBeacon?.(url, payload)) {
-      fetch(url, { method: "POST", keepalive: true }).catch(() => {});
+      fetch(url, { method: "POST", body: JSON.stringify({ token: auth.token }), headers: { "Content-Type": "application/json" }, keepalive: true }).catch(() => {});
     }
   } catch {
     // Page is unloading; local session cleanup is the important part.
