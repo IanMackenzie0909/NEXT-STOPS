@@ -15,7 +15,7 @@
   <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL-production-4169e1?style=flat&logo=postgresql&logoColor=white" />
   <img alt="Cloudflare Pages" src="https://img.shields.io/badge/Cloudflare%20Pages-frontend-f38020?style=flat&logo=cloudflarepages&logoColor=white" />
   <img alt="Render" src="https://img.shields.io/badge/Render-backend-46e3b7?style=flat&logo=render&logoColor=111827" />
-  <img alt="License" src="https://img.shields.io/badge/License-MIT-facc15?style=flat" />
+  <img src="https://img.shields.io/badge/License-AGPL%20v3-blue.svg" alt="License: AGPL v3" />
 </p>
 
 ## Overview
