@@ -78,12 +78,20 @@ class ApiSecurityTests(unittest.TestCase):
 
     def test_service_area_allows_taipei_main_station(self):
         self.assertTrue(api_app.is_within_service_area(25.0478, 121.5170))
+        self.assertEqual(api_app.find_service_area(25.0478, 121.5170)["name"], "中正區")
         self.assertIsNone(api_app.validate_criteria_service_area({"lat": 25.0478, "lon": 121.5170}))
+
+    def test_service_area_allows_new_taipei(self):
+        self.assertTrue(api_app.is_within_service_area(25.0143, 121.4639))
+        self.assertEqual(api_app.find_service_area(25.0143, 121.4639)["name"], "板橋區")
 
     def test_service_area_blocks_outside_current_location(self):
         self.assertFalse(api_app.is_within_service_area(24.1477, 120.6736))
         with self.assertRaises(ValueError):
             api_app.validate_criteria_service_area({"lat": 24.1477, "lon": 120.6736})
+
+    def test_service_area_blocks_keelung(self):
+        self.assertFalse(api_app.is_within_service_area(25.1276, 121.7392))
 
     def test_favorite_start_must_be_inside_service_area(self):
         with self.assertRaises(ValueError):

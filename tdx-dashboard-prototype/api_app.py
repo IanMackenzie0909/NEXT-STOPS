@@ -70,26 +70,8 @@ RATE_LIMIT_STORE: dict[str, deque[float]] = defaultdict(deque)
 RATE_LIMIT_LOCK = threading.Lock()
 SERVICE_AREA_LABEL = "雙北地區"
 SERVICE_AREA_NOTICE = "NEXT STOPS 目前暫定服務區域為臺北市與新北市。"
-SHUANGBEI_POLYGON = (
-    (121.3500, 25.1800),
-    (121.2850, 25.1050),
-    (121.3150, 25.0100),
-    (121.3800, 24.8800),
-    (121.5200, 24.7350),
-    (121.7100, 24.8100),
-    (121.9300, 24.9300),
-    (122.0100, 25.0300),
-    (121.9400, 25.1450),
-    (121.7450, 25.3050),
-    (121.4850, 25.3000),
-)
-KEELUNG_EXCLUSION_POLYGON = (
-    (121.6250, 25.0700),
-    (121.8150, 25.0700),
-    (121.8550, 25.1750),
-    (121.7750, 25.2150),
-    (121.6250, 25.1700),
-)
+SERVICE_AREA_FILE = PROJECT_ROOT / "shared" / "geo" / "service-area-shuangbei.json"
+SERVICE_AREA_CACHE: dict[str, Any] | None = None
 
 SAMPLE_LOCATIONS = [
     {"name": "臺北車站", "lat": 25.0478, "lon": 121.5170},
@@ -1972,11 +1954,19 @@ def update_user_preferences(user: dict[str, Any], preferences: dict[str, Any]) -
     return public_user(row)
 
 
-def point_in_polygon(lat: float, lon: float, polygon: tuple[tuple[float, float], ...]) -> bool:
+def load_service_area() -> dict[str, Any]:
+    global SERVICE_AREA_CACHE
+    if SERVICE_AREA_CACHE is None:
+        with SERVICE_AREA_FILE.open("r", encoding="utf-8") as file:
+            SERVICE_AREA_CACHE = json.load(file)
+    return SERVICE_AREA_CACHE
+
+
+def point_in_ring(lat: float, lon: float, ring: list[list[float]]) -> bool:
     inside = False
-    j = len(polygon) - 1
-    for i, (xi, yi) in enumerate(polygon):
-        xj, yj = polygon[j]
+    j = len(ring) - 1
+    for i, (xi, yi) in enumerate(ring):
+        xj, yj = ring[j]
         if (yi > lat) != (yj > lat):
             boundary_lon = ((xj - xi) * (lat - yi)) / ((yj - yi) or sys.float_info.epsilon) + xi
             if lon < boundary_lon:
@@ -1985,10 +1975,23 @@ def point_in_polygon(lat: float, lon: float, polygon: tuple[tuple[float, float],
     return inside
 
 
-def is_within_service_area(lat: float, lon: float) -> bool:
-    if not (math.isfinite(lat) and math.isfinite(lon)):
+def point_in_polygon(lat: float, lon: float, polygon: list[list[list[float]]]) -> bool:
+    if not polygon or not point_in_ring(lat, lon, polygon[0]):
         return False
-    return point_in_polygon(lat, lon, SHUANGBEI_POLYGON) and not point_in_polygon(lat, lon, KEELUNG_EXCLUSION_POLYGON)
+    return not any(point_in_ring(lat, lon, hole) for hole in polygon[1:])
+
+
+def find_service_area(lat: float, lon: float) -> dict[str, Any] | None:
+    if not (math.isfinite(lat) and math.isfinite(lon)):
+        return None
+    for feature in load_service_area().get("features", []):
+        if any(point_in_polygon(lat, lon, polygon) for polygon in feature.get("polygons", [])):
+            return feature
+    return None
+
+
+def is_within_service_area(lat: float, lon: float) -> bool:
+    return find_service_area(lat, lon) is not None
 
 
 def validate_criteria_service_area(criteria: dict[str, Any]) -> None:
