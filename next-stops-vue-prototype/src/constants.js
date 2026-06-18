@@ -13,6 +13,9 @@ export const LOCATION_FALLBACK_COORDS = {
   lon: 121.517,
 };
 
+export const SERVICE_AREA_LABEL = "雙北地區";
+export const SERVICE_AREA_NOTICE = "NEXT STOPS 目前暫定服務區域為臺北市與新北市。你仍可使用預設的台北車站，或已儲存於雙北地區內的常用起點。";
+
 export const WEATHER_LABELS = {
   any: "戶外也可以",
   indoor: "想待在室內",

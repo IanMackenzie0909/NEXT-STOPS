@@ -68,6 +68,28 @@ UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 DEFAULT_MAX_BODY_BYTES = 256 * 1024
 RATE_LIMIT_STORE: dict[str, deque[float]] = defaultdict(deque)
 RATE_LIMIT_LOCK = threading.Lock()
+SERVICE_AREA_LABEL = "雙北地區"
+SERVICE_AREA_NOTICE = "NEXT STOPS 目前暫定服務區域為臺北市與新北市。"
+SHUANGBEI_POLYGON = (
+    (121.3500, 25.1800),
+    (121.2850, 25.1050),
+    (121.3150, 25.0100),
+    (121.3800, 24.8800),
+    (121.5200, 24.7350),
+    (121.7100, 24.8100),
+    (121.9300, 24.9300),
+    (122.0100, 25.0300),
+    (121.9400, 25.1450),
+    (121.7450, 25.3050),
+    (121.4850, 25.3000),
+)
+KEELUNG_EXCLUSION_POLYGON = (
+    (121.6250, 25.0700),
+    (121.8150, 25.0700),
+    (121.8550, 25.1750),
+    (121.7750, 25.2150),
+    (121.6250, 25.1700),
+)
 
 SAMPLE_LOCATIONS = [
     {"name": "臺北車站", "lat": 25.0478, "lon": 121.5170},
@@ -1950,6 +1972,34 @@ def update_user_preferences(user: dict[str, Any], preferences: dict[str, Any]) -
     return public_user(row)
 
 
+def point_in_polygon(lat: float, lon: float, polygon: tuple[tuple[float, float], ...]) -> bool:
+    inside = False
+    j = len(polygon) - 1
+    for i, (xi, yi) in enumerate(polygon):
+        xj, yj = polygon[j]
+        if (yi > lat) != (yj > lat):
+            boundary_lon = ((xj - xi) * (lat - yi)) / ((yj - yi) or sys.float_info.epsilon) + xi
+            if lon < boundary_lon:
+                inside = not inside
+        j = i
+    return inside
+
+
+def is_within_service_area(lat: float, lon: float) -> bool:
+    if not (math.isfinite(lat) and math.isfinite(lon)):
+        return False
+    return point_in_polygon(lat, lon, SHUANGBEI_POLYGON) and not point_in_polygon(lat, lon, KEELUNG_EXCLUSION_POLYGON)
+
+
+def validate_criteria_service_area(criteria: dict[str, Any]) -> None:
+    lat = to_float(criteria.get("lat"))
+    lon = to_float(criteria.get("lon") if criteria.get("lon") is not None else criteria.get("lng"))
+    if lat is None or lon is None:
+        return
+    if not is_within_service_area(lat, lon):
+        raise ValueError(f"目前定位不在服務區域內；目前服務區域暫定為{SERVICE_AREA_LABEL}")
+
+
 def normalize_favorite_starts(raw_starts: Any) -> list[dict[str, Any]]:
     starts = []
     if not isinstance(raw_starts, list):
@@ -1964,6 +2014,8 @@ def normalize_favorite_starts(raw_starts: Any) -> list[dict[str, Any]]:
             raise ValueError("請先為常用起點命名")
         if not (-90 <= lat <= 90 and -180 <= lon <= 180):
             raise ValueError("常用起始點座標不正確")
+        if not is_within_service_area(lat, lon):
+            raise ValueError(f"常用起始點不在服務區域內；目前服務區域暫定為{SERVICE_AREA_LABEL}")
         starts.append({
             "id": str(item.get("id") or uuid.uuid4().hex),
             "label": label,
@@ -3106,6 +3158,7 @@ def build_recommendations(payload: dict[str, Any]) -> dict[str, Any]:
     request_id = str(uuid.uuid4())
     preference_signals = build_session_preference_signals(session_id)
     criteria = criteria_with_preference_signals(criteria, preference_signals)
+    validate_criteria_service_area(criteria)
 
     context = recommendation_context(criteria)
     user = user_context_from_criteria(criteria, context)

@@ -76,6 +76,19 @@ class ApiSecurityTests(unittest.TestCase):
     def test_admin_sha256_token_header_is_accepted(self):
         self.assertIsNone(api_app.require_admin("test-admin-token"))
 
+    def test_service_area_allows_taipei_main_station(self):
+        self.assertTrue(api_app.is_within_service_area(25.0478, 121.5170))
+        self.assertIsNone(api_app.validate_criteria_service_area({"lat": 25.0478, "lon": 121.5170}))
+
+    def test_service_area_blocks_outside_current_location(self):
+        self.assertFalse(api_app.is_within_service_area(24.1477, 120.6736))
+        with self.assertRaises(ValueError):
+            api_app.validate_criteria_service_area({"lat": 24.1477, "lon": 120.6736})
+
+    def test_favorite_start_must_be_inside_service_area(self):
+        with self.assertRaises(ValueError):
+            api_app.normalize_favorite_starts([{"label": "台中車站", "lat": 24.1368, "lon": 120.6850}])
+
 
 if __name__ == "__main__":
     unittest.main()

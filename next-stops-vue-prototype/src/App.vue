@@ -28,6 +28,7 @@ import {
   updateUserPreferences,
 } from "./api/nextStopsApi";
 import { LOCATION_FALLBACK_COORDS, LOCATION_FALLBACK_LABEL } from "./constants";
+import { isWithinServiceArea, serviceAreaError } from "./utils/serviceArea";
 import appIconImage from "./assets/APP_ICON.png";
 import bgmTimeToTime from "../BGM/ES_Time to Time - Helmut Schenker.mp3";
 import bgmSoftWeight from "../BGM/ES_Soft Weight of Slow Desire - Jay Taylor.mp3";
@@ -122,6 +123,10 @@ function updateCriteria(updates) {
 
 function useFavoriteStart(start) {
   if (start?.lat === undefined || start?.lon === undefined) return;
+  if (!isWithinServiceArea(start.lat, start.lon)) {
+    showToast(serviceAreaError("favorite"), { duration: 5200 });
+    return;
+  }
   updateCriteria({
     location: `favorite:${start.id}`,
     locationLabel: start.label,
@@ -162,6 +167,12 @@ function locateUser() {
       (position) => {
         const lat = Number(position.coords.latitude.toFixed(6));
         const lon = Number(position.coords.longitude.toFixed(6));
+        if (!isWithinServiceArea(lat, lon)) {
+          locating.value = false;
+          showToast(serviceAreaError("current"), { duration: 5600 });
+          resolve(false);
+          return;
+        }
         updateCriteria({
           location: "current",
           locationLabel: "你的位置",
@@ -290,6 +301,11 @@ async function saveProfile(profile) {
 
 async function saveFavoriteStarts(favoriteStarts) {
   try {
+    const outOfArea = favoriteStarts.find((start) => !isWithinServiceArea(start.lat, start.lon));
+    if (outOfArea) {
+      showToast(serviceAreaError("favorite"), { duration: 5200 });
+      return;
+    }
     const user = await updateFavoriteStarts(favoriteStarts);
     authUser.value = user;
     showToast("常用起始點已更新");
@@ -327,12 +343,12 @@ function fallbackPlace(id) {
   return results.value.find((place) => place.id === id) || saved.value.find((place) => place.id === id) || null;
 }
 
-function showToast(message) {
+function showToast(message, options = {}) {
   toastMessage.value = message;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
     toastMessage.value = "";
-  }, 2200);
+  }, options.duration || (typeof message === "object" ? 4600 : 2200));
 }
 
 async function toggleAmbient() {

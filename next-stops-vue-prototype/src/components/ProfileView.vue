@@ -1,12 +1,13 @@
 <script setup>
 import { computed, reactive, ref, watch } from "vue";
+import { isWithinServiceArea, serviceAreaError } from "../utils/serviceArea";
 
 const props = defineProps({
   user: { type: Object, required: true },
   saved: { type: Array, default: () => [] },
   criteria: { type: Object, default: null },
 });
-const emit = defineEmits(["navigate", "save-profile", "save-preferences", "logout", "delete-account", "toast"]);
+const emit = defineEmits(["navigate", "save-profile", "save-preferences", "save-starts", "logout", "delete-account", "toast"]);
 
 const controls = [
   { key: "mood", label: "心情契合" },
@@ -102,6 +103,10 @@ function addStartFromCoordinates(label, lat, lon) {
   const cleanLabel = String(label || "").trim().slice(0, 24);
   if (!cleanLabel) {
     emit("toast", "請先為常用起點命名");
+    return;
+  }
+  if (!isWithinServiceArea(lat, lon)) {
+    emit("toast", serviceAreaError("favorite"));
     return;
   }
   saveStarts([
