@@ -1,4 +1,4 @@
-"""TDX token cache client wrapper."""
+"""Transport service helpers for TDX-backed bus and MRT features."""
 
 from __future__ import annotations
 

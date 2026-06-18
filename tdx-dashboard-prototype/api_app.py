@@ -18,15 +18,25 @@ import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import requests
 
 try:
-    from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
+    from fastapi import FastAPI, Header, HTTPException
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("請先安裝 FastAPI dependencies：pip install -r requirements.txt") from exc
 
+from next_stops_backend.routers import (
+    admin as admin_router,
+    auth as auth_router,
+    places as places_router,
+    recommendations as recommendations_router,
+    routes as routes_router,
+    transport as transport_router,
+    weather as weather_router,
+)
 from next_stops_backend.database import (
     RECOMMENDATION_DB,
     USE_POSTGRES,
@@ -58,7 +68,7 @@ from next_stops_backend.service_area import (
     is_within_service_area,
     validate_criteria_service_area,
 )
-from next_stops_backend.tdx_client import CachedTDX
+from next_stops_backend.transport import CachedTDX
 from next_stops_backend.utils import (
     haversine_m,
     now_iso,
@@ -2233,22 +2243,6 @@ def build_recommendations(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-@app.get("/health")
-def health():
-    return {"status": "ok", "service": "next-stops-data-api"}
-
-
-@app.get("/api/sample-locations")
-def sample_locations():
-    return {"locations": SAMPLE_LOCATIONS}
-
-
-@app.get("/api/context")
-def next_stops_context(lat: float, lon: float, real: bool = False):
-    return run_or_raise(lambda: weather_aqi_client.real_context(lat, lon) if real else weather_aqi_client.context(lat, lon))
-
-
-@app.get("/api/mapbox-config")
 def mapbox_config():
     token = get_mapbox_token()
     if not token or token == DEFAULT_MAPBOX_TOKEN:
@@ -2256,161 +2250,11 @@ def mapbox_config():
     return {"access_token": token, "configured": True}
 
 
-@app.get("/api/auth/config")
 def auth_config():
     client_id = os.getenv("VITE_GOOGLE_CLIENT_ID") or os.getenv("GOOGLE_CLIENT_ID") or ""
     return {"google_client_id": client_id, "google_enabled": bool(client_id)}
 
 
-@app.post("/api/auth/register")
-def api_auth_register(payload: dict[str, Any] | None = Body(default=None)):
-    return run_or_raise(lambda: register_platform_user(payload or {}))
-
-
-@app.post("/api/auth/login")
-def api_auth_login(payload: dict[str, Any] | None = Body(default=None)):
-    return run_or_raise(lambda: login_platform_user(payload or {}))
-
-
-@app.post("/api/auth/google")
-def api_auth_google(payload: dict[str, Any] | None = Body(default=None)):
-    return run_or_raise(lambda: login_google_user(payload or {}))
-
-
-@app.get("/api/auth/me")
-def api_auth_me(authorization: str | None = Header(default=None)):
-    user = require_current_user(authorization)
-    return {"user": user}
-
-
-@app.patch("/api/auth/preferences")
-def api_auth_preferences(payload: dict[str, Any] | None = Body(default=None), authorization: str | None = Header(default=None)):
-    user = require_current_user(authorization)
-    updated = run_or_raise(lambda: update_user_preferences(user, payload or {}))
-    return {"user": updated}
-
-
-@app.patch("/api/auth/profile")
-def api_auth_profile(payload: dict[str, Any] | None = Body(default=None), authorization: str | None = Header(default=None)):
-    user = require_current_user(authorization)
-    updated = run_or_raise(lambda: update_user_profile(user, payload or {}))
-    return {"user": updated}
-
-
-@app.post("/api/auth/logout")
-def api_auth_logout(payload: dict[str, Any] | None = Body(default=None), authorization: str | None = Header(default=None)):
-    data = payload or {}
-    return run_or_raise(lambda: logout_auth_session(authorization or str(data.get("token") or "")))
-
-
-@app.delete("/api/auth/account")
-def api_auth_delete_account(authorization: str | None = Header(default=None)):
-    user = require_current_user(authorization)
-    return run_or_raise(lambda: delete_user_account(user))
-
-
-@app.get("/api/admin/summary")
-def api_admin_summary(_: None = Depends(require_admin)):
-    return run_or_raise(admin_summary)
-
-
-@app.get("/api/admin/overview")
-def api_admin_overview(limit: int = 80, _: None = Depends(require_admin)):
-    return run_or_raise(lambda: admin_overview(limit))
-
-
-@app.get("/api/admin/users")
-def api_admin_users(limit: int = 80, _: None = Depends(require_admin)):
-    return run_or_raise(lambda: admin_users(limit))
-
-
-@app.delete("/api/admin/users/{user_id}")
-def api_admin_delete_user(user_id: str, _: None = Depends(require_admin)):
-    return run_or_raise(lambda: admin_delete_user(user_id))
-
-
-@app.get("/api/admin/recommendations")
-def api_admin_recommendations(limit: int = 80, _: None = Depends(require_admin)):
-    return run_or_raise(lambda: admin_recommendations(limit))
-
-
-@app.get("/api/admin/feedback")
-def api_admin_feedback(limit: int = 120, _: None = Depends(require_admin)):
-    return run_or_raise(lambda: admin_feedback(limit))
-
-
-@app.get("/api/admin/places")
-def api_admin_places(_: None = Depends(require_admin)):
-    return run_or_raise(admin_places_summary)
-
-
-@app.post("/api/admin/places/rebuild")
-def api_admin_rebuild_places(with_optional: bool = False, _: None = Depends(require_admin)):
-    return places_build(with_optional=with_optional)
-
-
-@app.post("/api/route")
-def api_route(payload: dict[str, Any] | None = Body(default=None)):
-    def build_route():
-        data = payload or {}
-        origin = data.get("origin") or {}
-        destination = data.get("destination") or {}
-        if origin.get("lng") is not None and origin.get("lon") is None:
-            origin["lon"] = origin.get("lng")
-        if destination.get("lng") is not None and destination.get("lon") is None:
-            destination["lon"] = destination.get("lng")
-        if to_float(origin.get("lat")) is None or to_float(origin.get("lon")) is None:
-            raise ValueError("origin.lat and origin.lon are required")
-        if to_float(destination.get("lat")) is None or to_float(destination.get("lon")) is None:
-            raise ValueError("destination.lat and destination.lon are required")
-        normalized_origin = {"lat": to_float(origin["lat"]), "lon": to_float(origin["lon"])}
-        normalized_destination = {"lat": to_float(destination["lat"]), "lon": to_float(destination["lon"])}
-        return compare_commute_options(
-            normalized_origin,
-            normalized_destination,
-            modes=normalize_transport_modes(data.get("transportModes")),
-            include_geometry=True,
-        )
-
-    return run_or_raise(build_route)
-
-
-@app.get("/api/weather-aqi")
-def weather_aqi(lat: float, lon: float, real: bool = False):
-    return next_stops_context(lat=lat, lon=lon, real=real)
-
-
-@app.get("/api/cwa/current-weather")
-def cwa_current_weather(lat: float, lon: float):
-    return run_or_raise(lambda: cwa_module.CWAWeatherClient().current_weather(lat, lon))
-
-
-@app.get("/api/cwa/rainfall")
-def cwa_rainfall(lat: float, lon: float):
-    return run_or_raise(lambda: cwa_module.CWAWeatherClient().rainfall(lat, lon))
-
-
-@app.get("/api/cwa/uv")
-def cwa_uv(lat: float, lon: float, station_id: str = ""):
-    return run_or_raise(lambda: cwa_module.CWAWeatherClient().uv(lat, lon, station_id))
-
-
-@app.get("/api/cwa/forecast")
-def cwa_forecast(location_name: str | None = None):
-    return run_or_raise(lambda: cwa_module.CWAWeatherClient().forecast(location_name))
-
-
-@app.get("/api/cwa/township-forecast")
-def cwa_township_forecast(lat: float, lon: float):
-    return run_or_raise(lambda: cwa_module.CWAWeatherClient().township_forecast(lat, lon))
-
-
-@app.get("/api/moenv/aqi")
-def moenv_aqi(lat: float, lon: float):
-    return run_or_raise(lambda: moenv_module.MOENVAQIClient().aqi(lat, lon))
-
-
-@app.post("/api/places/build")
 def places_build(with_optional: bool = False):
     def build():
         service = TaipeiAttractionSearchService(cache_path=ATTRACTION_CACHE)
@@ -2420,115 +2264,6 @@ def places_build(with_optional: bool = False):
         return {"final_count": report.final_count, "fetched_counts": report.fetched_counts, "errors": report.errors}
 
     return run_or_raise(build)
-
-
-@app.get("/api/places/search")
-def api_places_search(
-    q: str | None = None,
-    district: str | None = None,
-    category: str | None = None,
-    lat: float | None = None,
-    lon: float | None = None,
-    radius_m: int | None = None,
-    limit: int = 20,
-):
-    return run_or_raise(
-        lambda: {
-            "count": len(
-                results := search_attraction_places(
-                    q=q,
-                    district=district,
-                    category=category,
-                    lat=lat,
-                    lon=lon,
-                    radius_m=radius_m,
-                    limit=limit,
-                )
-            ),
-            "results": results,
-        }
-    )
-
-
-@app.get("/api/places/{place_id}")
-def api_place_detail(
-    place_id: str,
-    lat: float | None = None,
-    lon: float | None = None,
-    mood: str = "relaxing_walk",
-    distance: int = 30,
-    time_minutes: int = Query(120, alias="time"),
-    budget: str = "medium",
-    weather_preference: str = Query("any", alias="weatherPreference"),
-    transport_modes: str | None = Query(None, alias="transportModes"),
-    session_id: str | None = None,
-):
-    criteria = detail_criteria_from_query(
-        lat=lat,
-        lon=lon,
-        mood=mood,
-        distance=distance,
-        time_minutes=time_minutes,
-        budget=budget,
-        weather_preference=weather_preference,
-        transport_modes=transport_modes,
-    )
-    return run_or_raise(lambda: build_place_detail(place_id, criteria, session_id=session_id))
-
-
-@app.get("/api/districts")
-def api_districts():
-    return run_or_raise(lambda: get_attraction_service().districts())
-
-
-@app.post("/api/recommend")
-def api_recommend(payload: dict[str, Any] | None = Body(default=None)):
-    return run_or_raise(lambda: build_recommendations(payload or {}))
-
-
-@app.post("/api/recommendations")
-def api_recommendations(payload: dict[str, Any] | None = Body(default=None)):
-    return run_or_raise(lambda: build_recommendations(payload or {}))
-
-
-@app.get("/api/recommendations/{request_id}")
-def api_recommendation_record(request_id: str):
-    record = run_or_raise(lambda: fetch_recommendation_record(request_id))
-    if record is None:
-        raise HTTPException(status_code=404, detail="Recommendation request not found")
-    return record
-
-
-@app.get("/api/saved-places")
-def api_saved_places(session_id: str = Query(...)):
-    return run_or_raise(lambda: {"saved": list_saved_places(session_id.strip())})
-
-
-@app.post("/api/saved-places")
-def api_save_place(payload: dict[str, Any] | None = Body(default=None)):
-    return run_or_raise(lambda: upsert_saved_place(payload or {}))
-
-
-@app.patch("/api/saved-places/{place_id}")
-def api_update_saved_place(place_id: str, payload: dict[str, Any] | None = Body(default=None)):
-    data = payload or {}
-    session_id = str(data.get("session_id") or "").strip()
-    if not session_id:
-        raise HTTPException(status_code=400, detail="session_id is required")
-    updated = run_or_raise(lambda: update_saved_place_note(session_id, place_id, str(data.get("note") or "")))
-    if updated is None:
-        raise HTTPException(status_code=404, detail="Saved place not found")
-    return updated
-
-
-@app.delete("/api/saved-places/{place_id}")
-def api_delete_saved_place(place_id: str, session_id: str = Query(...)):
-    return run_or_raise(lambda: remove_saved_place(session_id.strip(), place_id))
-
-
-@app.post("/api/recommendation-feedback")
-def api_recommendation_feedback(payload: dict[str, Any] | None = Body(default=None)):
-    return run_or_raise(lambda: record_feedback(payload or {}))
 
 
 def get_bus_city(city: str | None = None) -> str:
@@ -2650,24 +2385,6 @@ def get_bus_arrivals(stop_uid: str, city: str, route_name: str = "") -> dict:
         },
         "arrivals": serialized,
     }
-
-
-@app.get("/api/bus/stations")
-def bus_stations(q: str = "", city: str | None = None):
-    selected_city = get_bus_city(city)
-    return run_or_raise(lambda: [bus_station_option(item) for item in find_bus_stations(q, selected_city)])
-
-
-@app.get("/api/bus/station")
-def bus_station(station_id: str = Query(...), city: str | None = None):
-    selected_city = get_bus_city(city)
-    return run_or_raise(lambda: get_bus_station_detail(station_id.strip(), selected_city))
-
-
-@app.get("/api/bus/arrivals")
-def bus_arrivals(stop_uid: str = Query(...), city: str | None = None, route_name: str = ""):
-    selected_city = get_bus_city(city)
-    return run_or_raise(lambda: get_bus_arrivals(stop_uid.strip(), selected_city, route_name.strip()))
 
 
 def mrt_station_name_zh(station: dict) -> str:
@@ -2858,11 +2575,65 @@ def get_mrt_liveboard(station_id: str) -> dict:
     }
 
 
-@app.get("/api/mrt/stations")
-def mrt_stations(q: str = ""):
-    return run_or_raise(lambda: [mrt_station_summary(item) for item in find_mrt_stations(q)])
+def register_api_routers() -> None:
+    deps = SimpleNamespace(
+        admin_delete_user=admin_delete_user,
+        admin_feedback=admin_feedback,
+        admin_overview=admin_overview,
+        admin_places_summary=admin_places_summary,
+        admin_recommendations=admin_recommendations,
+        admin_summary=admin_summary,
+        admin_users=admin_users,
+        auth_config=auth_config,
+        build_place_detail=build_place_detail,
+        build_recommendations=build_recommendations,
+        bus_station_option=bus_station_option,
+        compare_commute_options=compare_commute_options,
+        cwa_module=cwa_module,
+        delete_user_account=delete_user_account,
+        detail_criteria_from_query=detail_criteria_from_query,
+        fetch_recommendation_record=fetch_recommendation_record,
+        find_bus_stations=find_bus_stations,
+        find_mrt_stations=find_mrt_stations,
+        get_attraction_service=get_attraction_service,
+        get_bus_arrivals=get_bus_arrivals,
+        get_bus_city=get_bus_city,
+        get_bus_station_detail=get_bus_station_detail,
+        get_mrt_liveboard=get_mrt_liveboard,
+        list_saved_places=list_saved_places,
+        login_google_user=login_google_user,
+        login_platform_user=login_platform_user,
+        logout_auth_session=logout_auth_session,
+        mapbox_config=mapbox_config,
+        moenv_module=moenv_module,
+        mrt_station_summary=mrt_station_summary,
+        normalize_transport_modes=normalize_transport_modes,
+        places_build=places_build,
+        record_feedback=record_feedback,
+        register_platform_user=register_platform_user,
+        remove_saved_place=remove_saved_place,
+        require_admin=require_admin,
+        require_current_user=require_current_user,
+        run_or_raise=run_or_raise,
+        sample_locations=SAMPLE_LOCATIONS,
+        search_attraction_places=search_attraction_places,
+        to_float=to_float,
+        update_saved_place_note=update_saved_place_note,
+        update_user_preferences=update_user_preferences,
+        update_user_profile=update_user_profile,
+        upsert_saved_place=upsert_saved_place,
+        weather_aqi_client=weather_aqi_client,
+    )
+    for router_factory in (
+        routes_router.create_router,
+        auth_router.create_router,
+        admin_router.create_router,
+        weather_router.create_router,
+        places_router.create_router,
+        recommendations_router.create_router,
+        transport_router.create_router,
+    ):
+        app.include_router(router_factory(deps))
 
 
-@app.get("/api/mrt/liveboard")
-def mrt_liveboard(station_id: str = Query(...)):
-    return run_or_raise(lambda: get_mrt_liveboard(station_id.strip()))
+register_api_routers()
