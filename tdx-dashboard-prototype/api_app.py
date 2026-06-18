@@ -10,7 +10,6 @@ import importlib.util
 import hashlib
 import hmac
 import json
-import math
 import os
 import re
 import secrets
@@ -19,11 +18,9 @@ import sys
 import threading
 import time
 import uuid
-from collections import defaultdict, deque
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 import requests
 
@@ -35,17 +32,37 @@ except ImportError:  # pragma: no cover - PostgreSQL is optional for local SQLit
     dict_row = None
 
 try:
-    from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
-    from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import JSONResponse
+    from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("請先安裝 FastAPI dependencies：pip install -r requirements.txt") from exc
 
+from next_stops_backend.security import (
+    DEFAULT_MAX_BODY_BYTES,
+    RATE_LIMIT_STORE,
+    UNSAFE_METHODS,
+    allowed_browser_origins,
+    check_rate_limit,
+    configure_cors,
+    env_int,
+    install_api_abuse_protection,
+    security_config_summary,
+    security_headers_for,
+    unsafe_request_rejection,
+)
 from next_stops_backend.service_area import (
     SERVICE_AREA_LABEL,
     find_service_area,
     is_within_service_area,
     validate_criteria_service_area,
+)
+from next_stops_backend.utils import (
+    decode_polyline,
+    format_distance,
+    format_duration,
+    haversine_m,
+    now_iso,
+    parse_google_duration_seconds,
+    to_float,
 )
 
 
@@ -71,10 +88,6 @@ DEFAULT_MAPBOX_TOKEN = "your_mapbox_access_token"
 MAX_STATION_RESULTS = 300
 TDX_REQUEST_RETRIES = 2
 ROUTE_COMPARE_MODES = ("CAR", "BUS", "MRT", "MOTORCYCLE", "WALKING", "BICYCLE")
-UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-DEFAULT_MAX_BODY_BYTES = 256 * 1024
-RATE_LIMIT_STORE: dict[str, deque[float]] = defaultdict(deque)
-RATE_LIMIT_LOCK = threading.Lock()
 
 SAMPLE_LOCATIONS = [
     {"name": "臺北車站", "lat": 25.0478, "lon": 121.5170},
@@ -214,19 +227,6 @@ def env_first(*names: str, default: str = "") -> str:
     return default
 
 
-def env_int(name: str, default: int, minimum: int = 0, maximum: int | None = None) -> int:
-    try:
-        value = int(os.getenv(name, str(default)))
-    except ValueError:
-        value = default
-    value = max(minimum, value)
-    return min(value, maximum) if maximum is not None else value
-
-
-def split_env_list(value: str) -> list[str]:
-    return [item.strip() for item in str(value or "").split(",") if item.strip()]
-
-
 def load_module(module_name: str, filename: str):
     module_path = ROOT / filename
     return load_module_from_path(module_name, module_path)
@@ -260,141 +260,9 @@ except ImportError as exc:  # pragma: no cover
     raise RuntimeError("Cannot import Taipei attraction search service") from exc
 
 
-def configured_cors_origins() -> list[str]:
-    return split_env_list(os.getenv(
-        "NEXT_STOPS_CORS_ORIGINS",
-        "http://127.0.0.1:5174,http://localhost:5174",
-    ))
-
-
 app = FastAPI(title="NEXT STOPS Data API", version="1.0.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=configured_cors_origins(),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-def normalized_origin(value: str | None) -> str:
-    parsed = urlparse(str(value or "").strip())
-    if not parsed.scheme or not parsed.netloc:
-        return ""
-    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
-
-
-def allowed_browser_origins() -> set[str]:
-    origins = set()
-    for value in configured_cors_origins() + split_env_list(os.getenv("NEXT_STOPS_TRUSTED_ORIGINS", "")):
-        normalized = normalized_origin(value)
-        if normalized:
-            origins.add(normalized)
-    return origins
-
-
-def request_origin(request: Request) -> str:
-    origin = normalized_origin(request.headers.get("origin"))
-    if origin:
-        return origin
-    return normalized_origin(request.headers.get("referer"))
-
-
-def client_ip(request: Request) -> str:
-    cf_ip = request.headers.get("cf-connecting-ip")
-    if cf_ip:
-        return cf_ip.strip()
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",", 1)[0].strip()
-    return request.client.host if request.client else "unknown"
-
-
-def rate_limit_for_path(path: str) -> tuple[int, int, str]:
-    if path.startswith("/api/admin"):
-        return env_int("NEXT_STOPS_RATE_LIMIT_ADMIN", 30, minimum=1), 60, "admin"
-    if path.startswith("/api/auth"):
-        return env_int("NEXT_STOPS_RATE_LIMIT_AUTH", 12, minimum=1), 60, "auth"
-    if path in {"/api/recommend", "/api/recommendations", "/api/route"}:
-        return env_int("NEXT_STOPS_RATE_LIMIT_RECOMMEND", 30, minimum=1), 60, "recommend"
-    if path in {"/api/places/build", "/api/admin/places/rebuild"}:
-        return env_int("NEXT_STOPS_RATE_LIMIT_BUILD", 3, minimum=1), 3600, "build"
-    return env_int("NEXT_STOPS_RATE_LIMIT_DEFAULT", 180, minimum=1), 60, "default"
-
-
-def check_rate_limit(request: Request) -> tuple[bool, int, int, str]:
-    limit, window_seconds, bucket = rate_limit_for_path(request.url.path)
-    if limit <= 0:
-        return True, 0, window_seconds, bucket
-    now = time.monotonic()
-    key = f"{client_ip(request)}:{bucket}"
-    with RATE_LIMIT_LOCK:
-        hits = RATE_LIMIT_STORE[key]
-        while hits and hits[0] <= now - window_seconds:
-            hits.popleft()
-        if len(hits) >= limit:
-            retry_after = max(1, int(window_seconds - (now - hits[0])))
-            return False, retry_after, window_seconds, bucket
-        hits.append(now)
-    return True, 0, window_seconds, bucket
-
-
-def security_headers_for(path: str) -> dict[str, str]:
-    headers = {
-        "X-Content-Type-Options": "nosniff",
-        "X-Frame-Options": "DENY",
-        "Referrer-Policy": "strict-origin-when-cross-origin",
-        "Permissions-Policy": "geolocation=(), microphone=(), camera=(), payment=()",
-        "Cache-Control": "no-store" if path.startswith(("/api/auth", "/api/admin")) else "private, max-age=30",
-    }
-    if path not in {"/docs", "/redoc", "/openapi.json"}:
-        headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
-    if os.getenv("NEXT_STOPS_ENABLE_HSTS", "").lower() in {"1", "true", "yes"}:
-        headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    return headers
-
-
-def protected_error(status_code: int, detail: str, headers: dict[str, str] | None = None) -> JSONResponse:
-    return JSONResponse({"detail": detail}, status_code=status_code, headers=headers or {})
-
-
-def unsafe_request_rejection(request: Request, body_size: int) -> tuple[int, str] | None:
-    origin = request_origin(request)
-    allowed_origins = allowed_browser_origins()
-    if origin and origin not in allowed_origins:
-        return 403, "Request origin is not allowed"
-    content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-    if body_size > 0 and content_type != "application/json":
-        return 415, "Only application/json requests are accepted"
-    return None
-
-
-@app.middleware("http")
-async def api_abuse_protection(request: Request, call_next):
-    path = request.url.path
-    max_body = env_int("NEXT_STOPS_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES, minimum=1024)
-    content_length = request.headers.get("content-length")
-    try:
-        body_size = int(content_length or "0")
-    except ValueError:
-        body_size = max_body + 1
-    if body_size > max_body:
-        response = protected_error(413, "Request body too large")
-    else:
-        allowed, retry_after, _window, _bucket = check_rate_limit(request)
-        if not allowed:
-            response = protected_error(429, "Too many requests", {"Retry-After": str(retry_after)})
-        elif request.method in UNSAFE_METHODS:
-            rejection = unsafe_request_rejection(request, body_size)
-            if rejection:
-                response = protected_error(rejection[0], rejection[1])
-            else:
-                response = await call_next(request)
-        else:
-            response = await call_next(request)
-    for key, value in security_headers_for(path).items():
-        response.headers.setdefault(key, value)
-    return response
+configure_cors(app)
+install_api_abuse_protection(app)
 
 
 class CachedTDX:
@@ -490,31 +358,6 @@ def run_or_raise(func):
         return func()
     except Exception as exc:
         raise api_error(exc) from exc
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def to_float(value: object, default: float | None = None) -> float | None:
-    try:
-        if value in (None, ""):
-            return default
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def haversine_m(lat1: float | None, lon1: float | None, lat2: float | None, lon2: float | None) -> float | None:
-    if None in (lat1, lon1, lat2, lon2):
-        return None
-    radius = 6371000
-    phi1 = math.radians(float(lat1))
-    phi2 = math.radians(float(lat2))
-    delta_phi = math.radians(float(lat2) - float(lat1))
-    delta_lambda = math.radians(float(lon2) - float(lon1))
-    a = math.sin(delta_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
-    return radius * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 def get_google_maps_key() -> str:
@@ -714,71 +557,6 @@ def connect_recommendation_db():
     if USE_POSTGRES:
         return PostgresConnection()
     return sqlite3.connect(RECOMMENDATION_DB)
-
-
-def decode_polyline(polyline: str) -> list[list[float]]:
-    coordinates = []
-    index = 0
-    lat = 0
-    lng = 0
-
-    while index < len(polyline):
-        shift = 0
-        result = 0
-        while True:
-            byte = ord(polyline[index]) - 63
-            index += 1
-            result |= (byte & 0x1F) << shift
-            shift += 5
-            if byte < 0x20:
-                break
-        lat += ~(result >> 1) if result & 1 else result >> 1
-
-        shift = 0
-        result = 0
-        while True:
-            byte = ord(polyline[index]) - 63
-            index += 1
-            result |= (byte & 0x1F) << shift
-            shift += 5
-            if byte < 0x20:
-                break
-        lng += ~(result >> 1) if result & 1 else result >> 1
-        coordinates.append([lng / 100000.0, lat / 100000.0])
-
-    return coordinates
-
-
-def format_duration(seconds: int | float | None) -> str:
-    if seconds is None:
-        return "--"
-    minutes = max(1, round(float(seconds) / 60))
-    if minutes < 60:
-        return f"{minutes} 分"
-    hours = minutes // 60
-    rest = minutes % 60
-    return f"{hours} 小時 {rest} 分" if rest else f"{hours} 小時"
-
-
-def format_distance(meters: int | float | None) -> str:
-    if meters is None:
-        return "--"
-    meters = float(meters)
-    if meters >= 1000:
-        return f"{meters / 1000:.1f} 公里"
-    return f"{round(meters)} 公尺"
-
-
-def parse_google_duration_seconds(value: Any) -> int | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if text.endswith("s"):
-        text = text[:-1]
-    try:
-        return max(1, round(float(text)))
-    except ValueError:
-        return None
 
 
 def google_route_params(mode: str) -> dict[str, str]:
@@ -2041,32 +1819,14 @@ def scalar_count(db, table: str) -> int:
 
 
 def security_summary() -> dict[str, Any]:
-    return {
-        "csrf": {
-            "strategy": "authorization-header-with-origin-guard",
-            "trusted_origins": sorted(allowed_browser_origins()),
-            "unsafe_methods": sorted(UNSAFE_METHODS),
-        },
-        "xss": {
-            "security_headers": True,
-            "content_security_policy": "api-default-src-none",
-        },
-        "abuse_protection": {
-            "max_body_bytes": env_int("NEXT_STOPS_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES, minimum=1024),
-            "json_only_unsafe_methods": True,
-            "rate_limits": {
-                "default_per_minute": env_int("NEXT_STOPS_RATE_LIMIT_DEFAULT", 180, minimum=1),
-                "auth_per_minute": env_int("NEXT_STOPS_RATE_LIMIT_AUTH", 12, minimum=1),
-                "admin_per_minute": env_int("NEXT_STOPS_RATE_LIMIT_ADMIN", 30, minimum=1),
-                "recommend_per_minute": env_int("NEXT_STOPS_RATE_LIMIT_RECOMMEND", 30, minimum=1),
-                "build_per_hour": env_int("NEXT_STOPS_RATE_LIMIT_BUILD", 3, minimum=1),
-            },
-        },
+    summary = security_config_summary()
+    summary.update({
         "admin": {
             "token_mode": "sha256" if os.getenv("ADMIN_TOKEN_SHA256", "").strip() else ("plain" if os.getenv("ADMIN_TOKEN", "").strip() else "unset"),
             "query_token_allowed": False,
         },
-    }
+    })
+    return summary
 
 
 def admin_summary() -> dict[str, Any]:

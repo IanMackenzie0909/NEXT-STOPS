@@ -15,7 +15,7 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SERVICE_AREA_LABEL = "雙北地區"
-SERVICE_AREA_NOTICE = "NEXT STOPS 目前暫定服務區域為臺北市與新北市。"
+SERVICE_AREA_NOTICE = "NEXT STOPS 目前提供服務區域僅限雙北地區。"
 SERVICE_AREA_FILE = PROJECT_ROOT / "shared" / "geo" / "service-area-shuangbei.json"
 SERVICE_AREA_CACHE: dict[str, Any] | None = None
 
@@ -75,4 +75,4 @@ def validate_criteria_service_area(criteria: dict[str, Any]) -> None:
     if lat is None or lon is None:
         return
     if not is_within_service_area(lat, lon):
-        raise ValueError(f"目前定位不在服務區域內；目前服務區域暫定為{SERVICE_AREA_LABEL}")
+        raise ValueError(f"目前定位不在服務範圍內；目前提供服務區域僅限{SERVICE_AREA_LABEL}")
