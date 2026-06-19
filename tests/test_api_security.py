@@ -27,6 +27,7 @@ os.environ["ADMIN_TOKEN_SHA256"] = hashlib.sha256(b"test-admin-token").hexdigest
 
 sys.path.insert(0, str(API_ROOT))
 api_app = importlib.import_module("api_app")
+service_area = importlib.import_module("next_stops_backend.service_area")
 
 
 class FakeRequest:
@@ -79,7 +80,7 @@ class ApiSecurityTests(unittest.TestCase):
     def test_service_area_allows_taipei_main_station(self):
         self.assertTrue(api_app.is_within_service_area(25.0478, 121.5170))
         self.assertEqual(api_app.find_service_area(25.0478, 121.5170)["name"], "中正區")
-        self.assertIsNone(api_app.validate_criteria_service_area({"lat": 25.0478, "lon": 121.5170}))
+        self.assertIsNone(service_area.validate_criteria_service_area({"lat": 25.0478, "lon": 121.5170}))
 
     def test_service_area_allows_new_taipei(self):
         self.assertTrue(api_app.is_within_service_area(25.0143, 121.4639))
@@ -88,7 +89,7 @@ class ApiSecurityTests(unittest.TestCase):
     def test_service_area_blocks_outside_current_location(self):
         self.assertFalse(api_app.is_within_service_area(24.1477, 120.6736))
         with self.assertRaises(ValueError):
-            api_app.validate_criteria_service_area({"lat": 24.1477, "lon": 120.6736})
+            service_area.validate_criteria_service_area({"lat": 24.1477, "lon": 120.6736})
 
     def test_service_area_blocks_keelung(self):
         self.assertFalse(api_app.is_within_service_area(25.1276, 121.7392))
