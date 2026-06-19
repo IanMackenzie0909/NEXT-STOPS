@@ -121,6 +121,14 @@ function addStartFromCoordinates(label, lat, lon) {
   startLabel.value = "";
 }
 
+function hasUsableCriteriaStart() {
+  if (props.criteria?.locationSource === "fallback") return false;
+  return props.criteria?.lat !== null
+    && props.criteria?.lat !== undefined
+    && props.criteria?.lon !== null
+    && props.criteria?.lon !== undefined;
+}
+
 function addCurrentStart() {
   if (!canAddStart.value) return;
   const label = startLabel.value.trim();
@@ -128,12 +136,12 @@ function addCurrentStart() {
     emit("toast", "請先為常用起點命名");
     return;
   }
-  if (props.criteria?.lat !== null && props.criteria?.lat !== undefined && props.criteria?.lon !== null && props.criteria?.lon !== undefined) {
+  if (hasUsableCriteriaStart()) {
     addStartFromCoordinates(label, props.criteria.lat, props.criteria.lon);
     return;
   }
   if (!("geolocation" in navigator)) {
-    emit("toast", "瀏覽器不支援定位，請先在首頁使用定位");
+    emit("toast", "瀏覽器不支援定位，無法新增目前起點");
     return;
   }
   addingStart.value = true;
@@ -144,7 +152,7 @@ function addCurrentStart() {
     },
     () => {
       addingStart.value = false;
-      emit("toast", "定位失敗，請先在首頁使用定位");
+      emit("toast", "定位失敗，請允許定位後再新增常用起點");
     },
     { enableHighAccuracy: true, timeout: 8000, maximumAge: 120000 },
   );
