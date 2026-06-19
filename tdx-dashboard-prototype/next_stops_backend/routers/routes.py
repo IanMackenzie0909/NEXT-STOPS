@@ -20,7 +20,7 @@ def create_router(deps) -> APIRouter:
 
     @router.get("/api/context")
     def context(lat: float, lon: float, real: bool = False):
-        return deps.run_or_raise(lambda: deps.weather_aqi_client.real_context(lat, lon) if real else deps.weather_aqi_client.context(lat, lon))
+        return deps.run_or_raise(lambda: deps.weather_service.context(lat, lon, real=real))
 
     @router.get("/api/mapbox-config")
     def mapbox_config():
@@ -52,4 +52,3 @@ def create_router(deps) -> APIRouter:
         return deps.run_or_raise(build_route)
 
     return router
-
