@@ -2,22 +2,15 @@
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 
 import requests
 
+from .config import env_first
+
 
 DEFAULT_TDX_REQUEST_RETRIES = 2
-
-
-def env_first(*names: str, default: str = "") -> str:
-    for name in names:
-        value = os.getenv(name)
-        if value:
-            return value
-    return default
 
 
 class CachedTDX:

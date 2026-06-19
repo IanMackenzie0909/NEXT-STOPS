@@ -6,28 +6,62 @@ Run from this directory:
 
 from __future__ import annotations
 
-import importlib.util
-import hashlib
-import hmac
 import json
 import os
 import re
-import secrets
 import sqlite3
-import sys
 import uuid
 from datetime import datetime
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import requests
 
 try:
-    from fastapi import FastAPI, Header, HTTPException
+    from fastapi import FastAPI, HTTPException
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("請先安裝 FastAPI dependencies：pip install -r requirements.txt") from exc
 
+from next_stops_backend.config import (
+    ATTRACTION_CACHE,
+    CATEGORY_LABELS,
+    DEFAULT_MAPBOX_TOKEN,
+    FEEDBACK_WEIGHT_RULES,
+    FRONTEND_MOOD_TO_ALGORITHM,
+    LOCATION_HINTS,
+    MAX_STATION_RESULTS,
+    MOOD_LABELS,
+    MOOD_QUERIES,
+    PROJECT_ROOT,
+    SAMPLE_LOCATIONS,
+    ensure_attraction_platform_on_path,
+    env_first,
+    load_module,
+    load_module_from_path,
+    load_root_env,
+)
+
+load_root_env()
+
+from next_stops_backend.admin import AdminService, require_admin
+from next_stops_backend.auth import (
+    auth_config,
+    delete_user_account,
+    login_google_user,
+    login_platform_user,
+    logout_auth_session,
+    normalize_favorite_starts,
+    register_platform_user,
+    require_current_user,
+    update_user_preferences,
+    update_user_profile,
+)
+from next_stops_backend.database import (
+    RECOMMENDATION_DB,
+    USE_POSTGRES,
+    connect_recommendation_db,
+    init_recommendation_db,
+)
 from next_stops_backend.routers import (
     admin as admin_router,
     auth as auth_router,
@@ -36,11 +70,6 @@ from next_stops_backend.routers import (
     routes as routes_router,
     transport as transport_router,
     weather as weather_router,
-)
-from next_stops_backend.database import (
-    RECOMMENDATION_DB,
-    USE_POSTGRES,
-    connect_recommendation_db,
 )
 from next_stops_backend.routing import (
     ROUTE_COMPARE_MODES,
@@ -62,139 +91,13 @@ from next_stops_backend.security import (
     security_headers_for,
     unsafe_request_rejection,
 )
-from next_stops_backend.service_area import (
-    SERVICE_AREA_LABEL,
-    find_service_area,
-    is_within_service_area,
-    validate_criteria_service_area,
-)
+from next_stops_backend.service_area import find_service_area, is_within_service_area, validate_criteria_service_area
 from next_stops_backend.transport import CachedTDX
 from next_stops_backend.utils import (
     haversine_m,
     now_iso,
     to_float,
 )
-
-
-ROOT = Path(__file__).resolve().parent
-PROJECT_ROOT = ROOT.parent
-ATTRACTION_PLATFORM_ROOT = ROOT / "taipei_attraction_search_platform"
-ATTRACTION_CACHE = ATTRACTION_PLATFORM_ROOT / "data" / "taipei_places.json"
-GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
-DEFAULT_MAPBOX_TOKEN = "your_mapbox_access_token"
-MAX_STATION_RESULTS = 300
-
-SAMPLE_LOCATIONS = [
-    {"name": "臺北車站", "lat": 25.0478, "lon": 121.5170},
-    {"name": "信義區市府", "lat": 25.0375, "lon": 121.5637},
-    {"name": "士林夜市", "lat": 25.0881, "lon": 121.5240},
-    {"name": "北投溫泉", "lat": 25.1368, "lon": 121.5064},
-    {"name": "南港展覽館", "lat": 25.0553, "lon": 121.6175},
-]
-
-LOCATION_HINTS = {
-    "taipei_main": {"lat": 25.0478, "lon": 121.5170, "district": "中正區", "label": "台北車站"},
-    "xinyi": {"lat": 25.0339, "lon": 121.5645, "district": "信義區", "label": "信義區"},
-    "daan": {"lat": 25.0262, "lon": 121.5353, "district": "大安區", "label": "大安森林公園"},
-    "songshan": {"lat": 25.0496, "lon": 121.5777, "district": "松山區", "label": "松山"},
-}
-
-FRONTEND_MOOD_TO_ALGORITHM = {
-    "relaxing_walk": "relax",
-    "date": "date",
-    "solo_quiet": "solo",
-    "photo": "photo",
-    "rainy_backup": "solo",
-    "night_out": "night",
-}
-
-MOOD_LABELS = {
-    "relaxing_walk": "散步放鬆",
-    "date": "約會",
-    "solo_quiet": "一個人安靜",
-    "photo": "拍照探索",
-    "rainy_backup": "雨天備案",
-    "night_out": "夜晚出門",
-}
-
-MOOD_QUERIES = {
-    "relaxing_walk": ["公園", "步道", "河濱"],
-    "date": ["景觀", "文創", "餐廳"],
-    "solo_quiet": ["博物館", "書店", "紀念館"],
-    "photo": ["景點", "古蹟", "藝術"],
-    "rainy_backup": ["博物館", "美術館", "文創"],
-    "night_out": ["夜市", "商圈", "景觀"],
-}
-
-CATEGORY_LABELS = {
-    "cafe": "咖啡",
-    "park": "公園",
-    "museum": "博物館",
-    "market": "市集",
-    "bookstore": "書店",
-    "riverside": "河濱",
-    "gallery": "藝文",
-    "venue": "場館",
-    "restaurant": "餐飲",
-    "viewpoint": "景觀",
-    "scenic_spot": "景點",
-    "attraction": "景點",
-    "taipei_featured": "精選景點",
-}
-
-OPENING_UNKNOWN_ALLOWED_CATEGORIES = {"park", "riverside", "viewpoint"}
-
-
-PASSWORD_PATTERN = re.compile(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$_-])[A-Za-z\d@$_-]{8,16}$")
-
-
-FEEDBACK_WEIGHT_RULES = {
-    "too_far": {"distance": 0.16},
-    "too_expensive": {"budget": 0.16},
-    "prefer_indoor": {"weather": 0.14, "environment": 0.12},
-    "prefer_quieter": {"mood": 0.08, "quality": 0.06},
-    "prefer_scenic": {"mood": 0.08, "quality": 0.06},
-    "good_fit": {"mood": 0.05, "quality": 0.05},
-    "not_my_vibe": {"mood": 0.08},
-}
-
-
-def load_root_env() -> None:
-    env_path = PROJECT_ROOT / ".env"
-    if not env_path.exists():
-        return
-    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
-
-
-def env_first(*names: str, default: str = "") -> str:
-    for name in names:
-        value = os.getenv(name)
-        if value:
-            return value
-    return default
-
-
-def load_module(module_name: str, filename: str):
-    module_path = ROOT / filename
-    return load_module_from_path(module_name, module_path)
-
-
-def load_module_from_path(module_name: str, module_path: Path):
-    spec = importlib.util.spec_from_file_location(module_name, module_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot load module from {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-load_root_env()
 
 cwa_module = load_module("cwa_weather_api_clients", "CWA-Weather_API_clients.py")
 moenv_module = load_module("moenv_aqi_api_clients", "MOENV-AQI_API_clients.py")
@@ -203,8 +106,7 @@ bus_module = load_module("tdx_bus_api_clients", "TDX-BUS_API_clients.py")
 mrt_module = load_module("tdx_mrt_api_clients", "TDX-MRT_API_clients.py")
 recommendation_algorithm = load_module_from_path("next_stops_recommendation_algorithm", PROJECT_ROOT / "algorithm.py")
 
-if str(ATTRACTION_PLATFORM_ROOT) not in sys.path:
-    sys.path.insert(0, str(ATTRACTION_PLATFORM_ROOT))
+ensure_attraction_platform_on_path()
 
 try:
     from taipei_attraction_platform.services.search_service import TaipeiAttractionSearchService
@@ -267,139 +169,6 @@ def run_or_raise(func):
 
 def get_mapbox_token() -> str:
     return env_first("MAPBOX_ACCESS_TOKEN", default=DEFAULT_MAPBOX_TOKEN)
-
-
-def public_user(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    get_value = row.get if isinstance(row, dict) else row.__getitem__
-    try:
-        preferences = json.loads(get_value("preferences_json") or "{}")
-    except Exception:
-        preferences = {}
-    return {
-        "id": get_value("id"),
-        "provider": get_value("provider"),
-        "account": get_value("account"),
-        "email": get_value("email"),
-        "name": get_value("display_name") or get_value("account") or get_value("email"),
-        "avatar_url": get_value("avatar_url"),
-        "session_id": f"user:{get_value('id')}",
-        "preferences": preferences,
-    }
-
-
-def clean_password(value: object) -> str:
-    return str(value or "").rstrip()
-
-
-def validate_password(account: str, password: str, confirm: str | None = None) -> None:
-    if confirm is not None and password != clean_password(confirm):
-        raise ValueError("兩次輸入的密碼不一致")
-    if account and account == password:
-        raise ValueError("帳號與密碼不可相同")
-    if re.search(r"\s", password):
-        raise ValueError("密碼開頭與中間不得包含空白字元")
-    if not PASSWORD_PATTERN.match(password):
-        raise ValueError("密碼需為 8-16 字元，包含大小寫英文字母、數字，且至少一個 @、$、_ 或 -")
-
-
-def hash_password(password: str) -> str:
-    salt = secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 180000)
-    return f"pbkdf2_sha256$180000${salt.hex()}${digest.hex()}"
-
-
-def verify_password(password: str, stored_hash: str | None) -> bool:
-    if not stored_hash:
-        return False
-    try:
-        algorithm, iterations, salt_hex, digest_hex = stored_hash.split("$", 3)
-        if algorithm != "pbkdf2_sha256":
-            return False
-        expected = bytes.fromhex(digest_hex)
-        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), int(iterations))
-        return hmac.compare_digest(digest, expected)
-    except Exception:
-        return False
-
-
-def create_auth_session(user_id: str) -> str:
-    init_recommendation_db()
-    token = secrets.token_urlsafe(40)
-    now = now_iso()
-    with connect_recommendation_db() as db:
-        db.execute(
-            "INSERT INTO auth_sessions (token, user_id, created_at, last_seen) VALUES (?, ?, ?, ?)",
-            (token, user_id, now, now),
-        )
-    return token
-
-
-def auth_response(user_row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    user = public_user(user_row)
-    return {"token": create_auth_session(user["id"]), "user": user}
-
-
-def bearer_token(authorization: str | None) -> str:
-    text = str(authorization or "").strip()
-    return text[7:].strip() if text.lower().startswith("bearer ") else text
-
-
-def current_user_from_token(token: str) -> dict[str, Any] | None:
-    token = bearer_token(token)
-    if not token:
-        return None
-    init_recommendation_db()
-    with connect_recommendation_db() as db:
-        db.row_factory = sqlite3.Row
-        row = db.execute(
-            """
-            SELECT users.*
-            FROM auth_sessions
-            JOIN users ON users.id = auth_sessions.user_id
-            WHERE auth_sessions.token = ?
-            """,
-            (token,),
-        ).fetchone()
-        if row:
-            db.execute("UPDATE auth_sessions SET last_seen = ? WHERE token = ?", (now_iso(), token))
-    return public_user(row) if row else None
-
-
-def require_current_user(authorization: str | None) -> dict[str, Any]:
-    user = current_user_from_token(authorization or "")
-    if not user:
-        raise HTTPException(status_code=401, detail="請先登入")
-    return user
-
-
-def require_admin(x_admin_token: str | None = Header(default=None)) -> None:
-    supplied = str(x_admin_token or "").strip()
-    expected = os.getenv("ADMIN_TOKEN", "").strip()
-    expected_sha256 = os.getenv("ADMIN_TOKEN_SHA256", "").strip().lower()
-    if not expected and not expected_sha256:
-        raise HTTPException(status_code=503, detail="ADMIN_TOKEN 或 ADMIN_TOKEN_SHA256 尚未設定")
-    if not supplied:
-        raise HTTPException(status_code=401, detail="Admin token 不正確")
-    supplied_ok = bool(expected and hmac.compare_digest(supplied, expected))
-    if expected_sha256:
-        supplied_hash = hashlib.sha256(supplied.encode("utf-8")).hexdigest()
-        supplied_ok = supplied_ok or hmac.compare_digest(supplied_hash, expected_sha256)
-    if not supplied_ok:
-        raise HTTPException(status_code=401, detail="Admin token 不正確")
-
-
-def verify_google_id_token(id_token: str) -> dict[str, Any]:
-    client_id = os.getenv("GOOGLE_CLIENT_ID") or os.getenv("VITE_GOOGLE_CLIENT_ID")
-    if not client_id:
-        raise ValueError("GOOGLE_CLIENT_ID 尚未設定")
-    response = requests.get(GOOGLE_TOKENINFO_URL, params={"id_token": id_token}, timeout=10)
-    response.raise_for_status()
-    info = response.json()
-    if info.get("aud") != client_id:
-        raise ValueError("Google token audience 不符合目前應用程式")
-    if info.get("email_verified") not in {True, "true", "True", "1", 1}:
-        raise ValueError("Google 帳戶尚未完成 email 驗證")
-    return info
 
 
 def get_attraction_service() -> TaipeiAttractionSearchService:
@@ -605,116 +374,6 @@ def build_place_detail(
     display["backup_options"] = build_nearby_backups(display, criteria, context)
     display["preference_signals"] = signals
     return display
-
-
-def init_recommendation_db() -> None:
-    if not USE_POSTGRES:
-        RECOMMENDATION_DB.parent.mkdir(parents=True, exist_ok=True)
-    with connect_recommendation_db() as db:
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS recommendation_requests (
-                id TEXT PRIMARY KEY,
-                created_at TEXT NOT NULL,
-                session_id TEXT,
-                criteria_json TEXT NOT NULL,
-                context_json TEXT NOT NULL,
-                source_status_json TEXT NOT NULL,
-                result_count INTEGER NOT NULL
-            )
-            """
-        )
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS recommendation_results (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                request_id TEXT NOT NULL,
-                rank INTEGER NOT NULL,
-                place_id TEXT NOT NULL,
-                place_name TEXT NOT NULL,
-                score REAL NOT NULL,
-                uncertainty REAL NOT NULL,
-                reason TEXT,
-                result_json TEXT NOT NULL,
-                FOREIGN KEY(request_id) REFERENCES recommendation_requests(id)
-            )
-            """
-        )
-        db.execute("CREATE INDEX IF NOT EXISTS idx_recommendation_results_request ON recommendation_results(request_id)")
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS saved_places (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                place_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                category TEXT,
-                address TEXT,
-                lat REAL,
-                lng REAL,
-                note TEXT,
-                place_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                UNIQUE(session_id, place_id)
-            )
-            """
-        )
-        db.execute("CREATE INDEX IF NOT EXISTS idx_saved_places_session ON saved_places(session_id)")
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS recommendation_feedback (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                request_id TEXT,
-                place_id TEXT NOT NULL,
-                feedback_type TEXT NOT NULL,
-                note TEXT,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        db.execute("CREATE INDEX IF NOT EXISTS idx_feedback_session ON recommendation_feedback(session_id)")
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS user_preference_signals (
-                session_id TEXT PRIMARY KEY,
-                signals_json TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                id TEXT PRIMARY KEY,
-                provider TEXT NOT NULL,
-                account TEXT UNIQUE,
-                email TEXT,
-                display_name TEXT NOT NULL,
-                avatar_url TEXT,
-                password_hash TEXT,
-                google_sub TEXT UNIQUE,
-                preferences_json TEXT NOT NULL DEFAULT '{}',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_account ON users(account) WHERE account IS NOT NULL")
-        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub) WHERE google_sub IS NOT NULL")
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS auth_sessions (
-                token TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                last_seen TEXT NOT NULL,
-                FOREIGN KEY(user_id) REFERENCES users(id)
-            )
-            """
-        )
-        db.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id)")
 
 
 def record_recommendation(
@@ -929,622 +588,6 @@ def record_feedback(payload: dict[str, Any]) -> dict[str, Any]:
         inserted_id = cursor.fetchone()["id"] if USE_POSTGRES else cursor.lastrowid
     signals = build_session_preference_signals(session_id)
     return {"ok": True, "id": inserted_id, "signals": signals}
-
-
-def register_platform_user(payload: dict[str, Any]) -> dict[str, Any]:
-    name = str(payload.get("name") or "").strip()
-    account = str(payload.get("account") or "").strip()
-    password = clean_password(payload.get("password"))
-    confirm = clean_password(payload.get("confirm_password"))
-    if not name:
-        raise ValueError("名稱為必填")
-    if not account:
-        raise ValueError("帳號為必填")
-    validate_password(account, password, confirm)
-
-    init_recommendation_db()
-    user_id = uuid.uuid4().hex
-    now = now_iso()
-    try:
-        with connect_recommendation_db() as db:
-            db.row_factory = sqlite3.Row
-            db.execute(
-                """
-                INSERT INTO users (
-                    id, provider, account, email, display_name, avatar_url, password_hash, google_sub,
-                    preferences_json, created_at, updated_at
-                ) VALUES (?, 'platform', ?, NULL, ?, NULL, ?, NULL, '{}', ?, ?)
-                """,
-                (user_id, account, name, hash_password(password), now, now),
-            )
-            row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    except Exception as exc:
-        if not isinstance(exc, sqlite3.IntegrityError) and exc.__class__.__name__ != "UniqueViolation":
-            raise
-        raise ValueError("這個帳號已經被使用") from exc
-    return {"ok": True, "user": public_user(row)}
-
-
-def login_platform_user(payload: dict[str, Any]) -> dict[str, Any]:
-    account = str(payload.get("account") or "").strip()
-    password = clean_password(payload.get("password"))
-    if not account or not password:
-        raise ValueError("帳號與密碼為必填")
-    init_recommendation_db()
-    with connect_recommendation_db() as db:
-        db.row_factory = sqlite3.Row
-        row = db.execute("SELECT * FROM users WHERE account = ? AND provider = 'platform'", (account,)).fetchone()
-    if row is None or not verify_password(password, row["password_hash"]):
-        raise ValueError("帳號或密碼錯誤")
-    return auth_response(row)
-
-
-def login_google_user(payload: dict[str, Any]) -> dict[str, Any]:
-    id_token = str(payload.get("id_token") or payload.get("credential") or "").strip()
-    if not id_token:
-        raise ValueError("Google ID token is required")
-    info = verify_google_id_token(id_token)
-    google_sub = str(info.get("sub") or "")
-    email = str(info.get("email") or "")
-    name = str(info.get("name") or email or "Google User")
-    avatar_url = str(info.get("picture") or "")
-    if not google_sub:
-        raise ValueError("Google token 缺少 sub")
-
-    init_recommendation_db()
-    now = now_iso()
-    with connect_recommendation_db() as db:
-        db.row_factory = sqlite3.Row
-        row = db.execute("SELECT * FROM users WHERE google_sub = ?", (google_sub,)).fetchone()
-        if row is None:
-            user_id = uuid.uuid4().hex
-            db.execute(
-                """
-                INSERT INTO users (
-                    id, provider, account, email, display_name, avatar_url, password_hash, google_sub,
-                    preferences_json, created_at, updated_at
-                ) VALUES (?, 'google', ?, ?, ?, ?, NULL, ?, '{}', ?, ?)
-                """,
-                (user_id, email or None, email or None, name, avatar_url or None, google_sub, now, now),
-            )
-            row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-        else:
-            db.execute(
-                """
-                UPDATE users SET email = ?, display_name = ?, avatar_url = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (email or row["email"], row["display_name"] or name, row["avatar_url"] or avatar_url or None, now, row["id"]),
-            )
-            row = db.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone()
-    return auth_response(row)
-
-
-def update_user_preferences(user: dict[str, Any], preferences: dict[str, Any]) -> dict[str, Any]:
-    allowed_weights = {"mood", "distance", "weather", "aqi", "budget", "category", "quality", "environment"}
-    current_preferences = dict(user.get("preferences") or {})
-    clean_preferences = dict(current_preferences)
-    if "weightAdjustments" in preferences or "weight_adjustments" in preferences:
-        raw_weights = preferences.get("weightAdjustments") or preferences.get("weight_adjustments") or {}
-        weights = {}
-        for key, value in raw_weights.items():
-            if key in allowed_weights:
-                weights[key] = max(0.5, min(1.6, float(value)))
-        clean_preferences["weightAdjustments"] = weights
-    if "favoriteStarts" in preferences or "favorite_starts" in preferences:
-        clean_preferences["favoriteStarts"] = normalize_favorite_starts(
-            preferences.get("favoriteStarts") or preferences.get("favorite_starts") or []
-        )
-    init_recommendation_db()
-    with connect_recommendation_db() as db:
-        db.row_factory = sqlite3.Row
-        db.execute(
-            "UPDATE users SET preferences_json = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(clean_preferences, ensure_ascii=False), now_iso(), user["id"]),
-        )
-        row = db.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
-    return public_user(row)
-
-
-def normalize_favorite_starts(raw_starts: Any) -> list[dict[str, Any]]:
-    starts = []
-    if not isinstance(raw_starts, list):
-        raise ValueError("常用起始點格式錯誤")
-    for item in raw_starts[:2]:
-        if not isinstance(item, dict):
-            continue
-        label = str(item.get("label") or "").strip()[:24]
-        lat = float(item.get("lat"))
-        lon = float(item.get("lon"))
-        if not label:
-            raise ValueError("請先為常用起點命名")
-        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-            raise ValueError("常用起始點座標不正確")
-        if not is_within_service_area(lat, lon):
-            raise ValueError(f"常用起始點不在服務區域內；目前服務區域暫定為{SERVICE_AREA_LABEL}")
-        starts.append({
-            "id": str(item.get("id") or uuid.uuid4().hex),
-            "label": label,
-            "lat": round(lat, 6),
-            "lon": round(lon, 6),
-        })
-    return starts
-
-
-def update_user_profile(user: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
-    name = str(payload.get("name") or "").strip()
-    avatar_url = str(payload.get("avatar_url") or "").strip()
-    if not name:
-        raise ValueError("名稱為必填")
-    if len(name) > 40:
-        raise ValueError("名稱最多 40 個字元")
-    if len(avatar_url) > 800000:
-        raise ValueError("頭像圖片過大，請選擇較小的圖片")
-    if avatar_url and not (avatar_url.startswith("data:image/") or avatar_url.startswith("https://")):
-        raise ValueError("頭像格式不支援")
-
-    init_recommendation_db()
-    with connect_recommendation_db() as db:
-        db.row_factory = sqlite3.Row
-        db.execute(
-            "UPDATE users SET display_name = ?, avatar_url = ?, updated_at = ? WHERE id = ?",
-            (name, avatar_url or None, now_iso(), user["id"]),
-        )
-        row = db.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone()
-    return public_user(row)
-
-
-def logout_auth_session(token: str) -> dict[str, Any]:
-    token = bearer_token(token)
-    if token:
-        init_recommendation_db()
-        with connect_recommendation_db() as db:
-            db.execute("DELETE FROM auth_sessions WHERE token = ?", (token,))
-    return {"ok": True}
-
-
-def delete_user_account(user: dict[str, Any]) -> dict[str, Any]:
-    session_id = user["session_id"]
-    init_recommendation_db()
-    with connect_recommendation_db() as db:
-        db.row_factory = sqlite3.Row
-        request_ids = [
-            row["id"]
-            for row in db.execute("SELECT id FROM recommendation_requests WHERE session_id = ?", (session_id,)).fetchall()
-        ]
-        if request_ids:
-            placeholders = ",".join("?" for _ in request_ids)
-            db.execute(f"DELETE FROM recommendation_results WHERE request_id IN ({placeholders})", request_ids)
-        db.execute("DELETE FROM recommendation_requests WHERE session_id = ?", (session_id,))
-        db.execute("DELETE FROM saved_places WHERE session_id = ?", (session_id,))
-        db.execute("DELETE FROM recommendation_feedback WHERE session_id = ?", (session_id,))
-        db.execute("DELETE FROM user_preference_signals WHERE session_id = ?", (session_id,))
-        db.execute("DELETE FROM auth_sessions WHERE user_id = ?", (user["id"],))
-        db.execute("DELETE FROM users WHERE id = ?", (user["id"],))
-    return {"ok": True, "deleted_user_id": user["id"]}
-
-
-def scalar_count(db, table: str) -> int:
-    row = db.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
-    return int(row["count"] if isinstance(row, dict) else row["count"])
-
-
-def security_summary() -> dict[str, Any]:
-    summary = security_config_summary()
-    summary.update({
-        "admin": {
-            "token_mode": "sha256" if os.getenv("ADMIN_TOKEN_SHA256", "").strip() else ("plain" if os.getenv("ADMIN_TOKEN", "").strip() else "unset"),
-            "query_token_allowed": False,
-        },
-    })
-    return summary
-
-
-def admin_summary() -> dict[str, Any]:
-    init_recommendation_db()
-    with connect_recommendation_db() as db:
-        db.row_factory = sqlite3.Row
-        counts = {
-            "users": scalar_count(db, "users"),
-            "auth_sessions": scalar_count(db, "auth_sessions"),
-            "recommendation_requests": scalar_count(db, "recommendation_requests"),
-            "saved_places": scalar_count(db, "saved_places"),
-            "recommendation_feedback": scalar_count(db, "recommendation_feedback"),
-        }
-    places = get_attraction_service().index.places
-    return {
-        "database": {
-            "backend": "postgresql" if USE_POSTGRES else "sqlite",
-            "path": "" if USE_POSTGRES else str(RECOMMENDATION_DB),
-        },
-        "counts": counts,
-        "places": {
-            "cache": str(ATTRACTION_CACHE),
-            "count": len(places),
-            "cache_exists": ATTRACTION_CACHE.exists(),
-        },
-        "api": {"status": "ok", "time": now_iso()},
-        "security": security_summary(),
-    }
-
-
-def admin_users(limit: int = 80) -> dict[str, Any]:
-    init_recommendation_db()
-    limit = max(1, min(int(limit or 80), 200))
-    with connect_recommendation_db() as db:
-        db.row_factory = sqlite3.Row
-        rows = db.execute(
-            """
-            SELECT id, provider, account, email, display_name, avatar_url, preferences_json, created_at, updated_at
-            FROM users
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-    users = []
-    for row in rows:
-        preferences = _safe_json_loads(row["preferences_json"], {})
-        users.append({
-            "id": row["id"],
-            "provider": row["provider"],
-            "account": row["account"],
-            "email": row["email"],
-            "name": row["display_name"],
-            "avatar_url": row["avatar_url"],
-            "favorite_starts_count": len(preferences.get("favoriteStarts") or []),
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-        })
-    return {"users": users}
-
-
-def admin_delete_user(user_id: str) -> dict[str, Any]:
-    init_recommendation_db()
-    with connect_recommendation_db() as db:
-        db.row_factory = sqlite3.Row
-        row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    return delete_user_account(public_user(row))
-
-
-def admin_recommendations(limit: int = 80) -> dict[str, Any]:
-    init_recommendation_db()
-    limit = max(1, min(int(limit or 80), 200))
-    with connect_recommendation_db() as db:
-        db.row_factory = sqlite3.Row
-        rows = db.execute(
-            """
-            SELECT id, created_at, session_id, criteria_json, source_status_json, result_count
-            FROM recommendation_requests
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-    requests = []
-    for row in rows:
-        criteria = _safe_json_loads(row["criteria_json"], {})
-        source_status = _safe_json_loads(row["source_status_json"], {})
-        requests.append({
-            "id": row["id"],
-            "created_at": row["created_at"],
-            "session_id": row["session_id"],
-            "mood": criteria.get("mood"),
-            "location": criteria.get("locationLabel") or criteria.get("location"),
-            "distance": criteria.get("distance"),
-            "transport_modes": criteria.get("transportModes") or [],
-            "result_count": row["result_count"],
-            "database": source_status.get("database") or source_status.get("sqlite") or {},
-        })
-    return {"requests": requests}
-
-
-def admin_feedback(limit: int = 120) -> dict[str, Any]:
-    init_recommendation_db()
-    limit = max(1, min(int(limit or 120), 300))
-    with connect_recommendation_db() as db:
-        db.row_factory = sqlite3.Row
-        rows = db.execute(
-            """
-            SELECT session_id, request_id, place_id, feedback_type, note, created_at
-            FROM recommendation_feedback
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-    return {
-        "feedback": [
-            {
-                "session_id": row["session_id"],
-                "request_id": row["request_id"],
-                "place_id": row["place_id"],
-                "feedback_type": row["feedback_type"],
-                "note": row["note"],
-                "created_at": row["created_at"],
-            }
-            for row in rows
-        ]
-    }
-
-
-def admin_places_summary() -> dict[str, Any]:
-    places = get_attraction_service().index.places
-    categories: dict[str, int] = {}
-    for place in places:
-        payload = place.to_dict() if hasattr(place, "to_dict") else dict(place)
-        category = str(payload.get("category") or payload.get("algorithm_category") or "unknown")
-        categories[category] = categories.get(category, 0) + 1
-    top_categories = [
-        {"category": category, "count": count}
-        for category, count in sorted(categories.items(), key=lambda item: item[1], reverse=True)[:12]
-    ]
-    return {
-        "cache": str(ATTRACTION_CACHE),
-        "cache_exists": ATTRACTION_CACHE.exists(),
-        "count": len(places),
-        "top_categories": top_categories,
-    }
-
-
-def db_scalar(db, sql: str, params: tuple = ()) -> int:
-    row = db.execute(sql, params).fetchone()
-    if row is None:
-        return 0
-    value = row[0] if not isinstance(row, dict) else next(iter(row.values()))
-    return int(value or 0)
-
-
-def db_single_value(db, sql: str, params: tuple = (), default: Any = None) -> Any:
-    row = db.execute(sql, params).fetchone()
-    if row is None:
-        return default
-    if isinstance(row, dict):
-        return next(iter(row.values()))
-    try:
-        return row[0]
-    except Exception:
-        return default
-
-
-def _group_count(rows: list[sqlite3.Row], key: str) -> list[dict[str, Any]]:
-    counts: dict[str, int] = {}
-    for row in rows:
-        value = str(row[key] or "unknown")
-        counts[value] = counts.get(value, 0) + 1
-    return [
-        {"label": label, "count": count}
-        for label, count in sorted(counts.items(), key=lambda item: item[1], reverse=True)
-    ]
-
-
-def admin_overview(limit: int = 80) -> dict[str, Any]:
-    init_recommendation_db()
-    limit = max(1, min(int(limit or 80), 200))
-    with connect_recommendation_db() as db:
-        db.row_factory = sqlite3.Row
-        counts = {
-            "users": scalar_count(db, "users"),
-            "auth_sessions": scalar_count(db, "auth_sessions"),
-            "recommendation_requests": scalar_count(db, "recommendation_requests"),
-            "recommendation_results": scalar_count(db, "recommendation_results"),
-            "saved_places": scalar_count(db, "saved_places"),
-            "recommendation_feedback": scalar_count(db, "recommendation_feedback"),
-            "user_preference_signals": scalar_count(db, "user_preference_signals"),
-        }
-        users_raw = db.execute(
-            """
-            SELECT id, provider, account, email, display_name, avatar_url, preferences_json, created_at, updated_at
-            FROM users
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-        requests_raw = db.execute(
-            """
-            SELECT id, created_at, session_id, criteria_json, context_json, source_status_json, result_count
-            FROM recommendation_requests
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-        feedback_raw = db.execute(
-            """
-            SELECT session_id, request_id, place_id, feedback_type, note, created_at
-            FROM recommendation_feedback
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-        saved_raw = db.execute(
-            """
-            SELECT session_id, place_id, name, category, address, note, created_at, updated_at
-            FROM saved_places
-            ORDER BY updated_at DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-        top_place_rows = db.execute(
-            """
-            SELECT place_id, MAX(place_name) AS place_name, COUNT(*) AS recommended_count, AVG(score) AS avg_score
-            FROM recommendation_results
-            GROUP BY place_id
-            ORDER BY recommended_count DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-
-        users = []
-        user_by_session = {}
-        for row in users_raw:
-            session_id = f"user:{row['id']}"
-            preferences = _safe_json_loads(row["preferences_json"], {})
-            user_by_session[session_id] = {
-                "id": row["id"],
-                "name": row["display_name"],
-                "provider": row["provider"],
-                "account": row["account"],
-                "email": row["email"],
-            }
-            users.append({
-                "id": row["id"],
-                "session_id": session_id,
-                "provider": row["provider"],
-                "account": row["account"],
-                "email": row["email"],
-                "name": row["display_name"],
-                "avatar_url": row["avatar_url"],
-                "favorite_starts_count": len(preferences.get("favoriteStarts") or []),
-                "weight_count": len((preferences.get("weightAdjustments") or {}).keys()),
-                "auth_sessions": db_scalar(db, "SELECT COUNT(*) FROM auth_sessions WHERE user_id = ?", (row["id"],)),
-                "saved_places": db_scalar(db, "SELECT COUNT(*) FROM saved_places WHERE session_id = ?", (session_id,)),
-                "recommendations": db_scalar(db, "SELECT COUNT(*) FROM recommendation_requests WHERE session_id = ?", (session_id,)),
-                "feedback": db_scalar(db, "SELECT COUNT(*) FROM recommendation_feedback WHERE session_id = ?", (session_id,)),
-                "last_recommendation_at": db_single_value(
-                    db,
-                    "SELECT MAX(created_at) FROM recommendation_requests WHERE session_id = ?",
-                    (session_id,),
-                    "",
-                ),
-                "created_at": row["created_at"],
-                "updated_at": row["updated_at"],
-            })
-
-        requests = []
-        for row in requests_raw:
-            criteria = _safe_json_loads(row["criteria_json"], {})
-            context = _safe_json_loads(row["context_json"], {})
-            source_status = _safe_json_loads(row["source_status_json"], {})
-            top_result = db.execute(
-                """
-                SELECT place_id, place_name, score
-                FROM recommendation_results
-                WHERE request_id = ?
-                ORDER BY rank ASC
-                LIMIT 1
-                """,
-                (row["id"],),
-            ).fetchone()
-            feedback_count = db_scalar(db, "SELECT COUNT(*) FROM recommendation_feedback WHERE request_id = ?", (row["id"],))
-            requests.append({
-                "id": row["id"],
-                "created_at": row["created_at"],
-                "session_id": row["session_id"],
-                "user": user_by_session.get(row["session_id"]),
-                "mood": criteria.get("mood"),
-                "location": criteria.get("locationLabel") or criteria.get("location"),
-                "time": criteria.get("time"),
-                "distance": criteria.get("distance"),
-                "budget": criteria.get("budget"),
-                "weather_preference": criteria.get("weatherPreference"),
-                "transport_modes": criteria.get("transportModes") or [],
-                "rain_probability": rain_probability_from_context(context),
-                "aqi": aqi_from_context(context),
-                "result_count": row["result_count"],
-                "feedback_count": feedback_count,
-                "top_result": dict(top_result) if top_result else None,
-                "source_status": source_status,
-            })
-
-        feedback = []
-        for row in feedback_raw:
-            feedback.append({
-                "session_id": row["session_id"],
-                "user": user_by_session.get(row["session_id"]),
-                "request_id": row["request_id"],
-                "place_id": row["place_id"],
-                "feedback_type": row["feedback_type"],
-                "note": row["note"],
-                "created_at": row["created_at"],
-            })
-
-        saved = []
-        for row in saved_raw:
-            saved.append({
-                "session_id": row["session_id"],
-                "user": user_by_session.get(row["session_id"]),
-                "place_id": row["place_id"],
-                "name": row["name"],
-                "category": row["category"],
-                "address": row["address"],
-                "note": row["note"],
-                "created_at": row["created_at"],
-                "updated_at": row["updated_at"],
-            })
-
-        saved_count_by_place = {
-            row["place_id"]: row["count"]
-            for row in db.execute(
-                "SELECT place_id, COUNT(*) AS count FROM saved_places GROUP BY place_id"
-            ).fetchall()
-        }
-        feedback_count_by_place = {
-            row["place_id"]: row["count"]
-            for row in db.execute(
-                "SELECT place_id, COUNT(*) AS count FROM recommendation_feedback GROUP BY place_id"
-            ).fetchall()
-        }
-        places = []
-        for row in top_place_rows:
-            places.append({
-                "place_id": row["place_id"],
-                "name": row["place_name"],
-                "recommended_count": int(row["recommended_count"] or 0),
-                "saved_count": int(saved_count_by_place.get(row["place_id"], 0)),
-                "feedback_count": int(feedback_count_by_place.get(row["place_id"], 0)),
-                "avg_score": round(float(row["avg_score"] or 0) * 100, 1),
-            })
-
-        all_request_rows = db.execute("SELECT id, session_id, created_at, criteria_json FROM recommendation_requests").fetchall()
-        all_feedback_rows = db.execute("SELECT feedback_type, request_id, session_id, place_id, created_at FROM recommendation_feedback").fetchall()
-        provider_rows = db.execute("SELECT provider FROM users").fetchall()
-        session_ids = {row["session_id"] for row in all_request_rows if row["session_id"]}
-        guest_sessions = [sid for sid in session_ids if not str(sid).startswith("user:")]
-        linked_user_sessions = [sid for sid in session_ids if str(sid).startswith("user:") and sid in user_by_session]
-        orphan_user_sessions = [
-            sid for sid in session_ids
-            if str(sid).startswith("user:") and sid not in user_by_session
-        ]
-        request_ids = {row["id"] for row in all_request_rows}
-        orphan_feedback = [
-            row for row in all_feedback_rows
-            if row["request_id"] and row["request_id"] not in request_ids
-        ]
-
-    places_summary = admin_places_summary()
-    return {
-        "database": {
-            "backend": "postgresql" if USE_POSTGRES else "sqlite",
-            "path": "" if USE_POSTGRES else str(RECOMMENDATION_DB),
-        },
-        "counts": counts,
-        "health": {
-            "guest_sessions": len(guest_sessions),
-            "linked_user_sessions": len(linked_user_sessions),
-            "orphan_user_sessions": len(orphan_user_sessions),
-            "orphan_feedback": len(orphan_feedback),
-            "place_cache_exists": places_summary.get("cache_exists"),
-        },
-        "breakdowns": {
-            "providers": _group_count(provider_rows, "provider"),
-            "feedback_types": _group_count(all_feedback_rows, "feedback_type"),
-        },
-        "users": users,
-        "requests": requests,
-        "feedback": feedback,
-        "saved": saved,
-        "places": places,
-        "place_cache": places_summary,
-        "api": {"status": "ok", "time": now_iso()},
-        "security": security_summary(),
-    }
 
 
 def _safe_json_loads(value: str | None, fallback: Any) -> Any:
@@ -2250,11 +1293,6 @@ def mapbox_config():
     return {"access_token": token, "configured": True}
 
 
-def auth_config():
-    client_id = os.getenv("VITE_GOOGLE_CLIENT_ID") or os.getenv("GOOGLE_CLIENT_ID") or ""
-    return {"google_client_id": client_id, "google_enabled": bool(client_id)}
-
-
 def places_build(with_optional: bool = False):
     def build():
         service = TaipeiAttractionSearchService(cache_path=ATTRACTION_CACHE)
@@ -2575,15 +1613,22 @@ def get_mrt_liveboard(station_id: str) -> dict:
     }
 
 
+admin_service = AdminService(
+    get_attraction_service=get_attraction_service,
+    rain_probability_from_context=rain_probability_from_context,
+    aqi_from_context=aqi_from_context,
+)
+
+
 def register_api_routers() -> None:
     deps = SimpleNamespace(
-        admin_delete_user=admin_delete_user,
-        admin_feedback=admin_feedback,
-        admin_overview=admin_overview,
-        admin_places_summary=admin_places_summary,
-        admin_recommendations=admin_recommendations,
-        admin_summary=admin_summary,
-        admin_users=admin_users,
+        admin_delete_user=admin_service.delete_user,
+        admin_feedback=admin_service.feedback,
+        admin_overview=admin_service.overview,
+        admin_places_summary=admin_service.places_summary,
+        admin_recommendations=admin_service.recommendations,
+        admin_summary=admin_service.summary,
+        admin_users=admin_service.users,
         auth_config=auth_config,
         build_place_detail=build_place_detail,
         build_recommendations=build_recommendations,
