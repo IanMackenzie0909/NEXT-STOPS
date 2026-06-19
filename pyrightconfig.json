@@ -1,0 +1,14 @@
+{
+  "include": [
+    "tdx-dashboard-prototype/api_app.py",
+    "tdx-dashboard-prototype/next_stops_backend",
+    "tests/test_api_security.py"
+  ],
+  "venvPath": ".",
+  "venv": "env",
+  "pythonVersion": "3.12",
+  "extraPaths": [
+    "tdx-dashboard-prototype",
+    "tdx-dashboard-prototype/taipei_attraction_search_platform"
+  ]
+}

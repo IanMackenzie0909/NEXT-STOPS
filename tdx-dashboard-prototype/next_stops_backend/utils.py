@@ -11,7 +11,7 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def to_float(value: object, default: float | None = None) -> float | None:
+def to_float(value: Any, default: float | None = None) -> float | None:
     try:
         if value is None or value == "":
             return default
@@ -26,13 +26,17 @@ def haversine_m(
     lat2: float | None,
     lon2: float | None,
 ) -> float | None:
-    if None in {lat1, lon1, lat2, lon2}:
+    if lat1 is None or lon1 is None or lat2 is None or lon2 is None:
         return None
     radius = 6371000
-    phi1 = math.radians(float(lat1))
-    phi2 = math.radians(float(lat2))
-    delta_phi = math.radians(float(lat2) - float(lat1))
-    delta_lambda = math.radians(float(lon2) - float(lon1))
+    lat1_float = float(lat1)
+    lon1_float = float(lon1)
+    lat2_float = float(lat2)
+    lon2_float = float(lon2)
+    phi1 = math.radians(lat1_float)
+    phi2 = math.radians(lat2_float)
+    delta_phi = math.radians(lat2_float - lat1_float)
+    delta_lambda = math.radians(lon2_float - lon1_float)
     a = math.sin(delta_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
     return radius * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 

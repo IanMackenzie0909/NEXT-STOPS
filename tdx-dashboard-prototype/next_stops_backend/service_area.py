@@ -20,7 +20,7 @@ SERVICE_AREA_FILE = PROJECT_ROOT / "shared" / "geo" / "service-area-shuangbei.js
 SERVICE_AREA_CACHE: dict[str, Any] | None = None
 
 
-def _to_float(value: object) -> float | None:
+def _to_float(value: Any) -> float | None:
     try:
         if value is None or value == "":
             return None
@@ -34,6 +34,8 @@ def load_service_area() -> dict[str, Any]:
     if SERVICE_AREA_CACHE is None:
         with SERVICE_AREA_FILE.open("r", encoding="utf-8") as file:
             SERVICE_AREA_CACHE = json.load(file)
+    if SERVICE_AREA_CACHE is None:
+        raise RuntimeError("Service area cache failed to load")
     return SERVICE_AREA_CACHE
 
 

@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from importlib import import_module
 from pathlib import Path
+from types import TracebackType
+from typing import Any
 
 try:
-    import psycopg
-    from psycopg.rows import dict_row
+    psycopg = import_module("psycopg")
+    dict_row = getattr(import_module("psycopg.rows"), "dict_row")
 except ImportError:  # pragma: no cover - PostgreSQL is optional for local SQLite mode.
     psycopg = None
     dict_row = None
@@ -58,12 +61,17 @@ class PostgresConnection:
         if psycopg is None:
             raise RuntimeError("PostgreSQL mode requires psycopg. Install dependencies with: pip install -r requirements.txt")
         self.conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
-        self.row_factory = None
+        self.row_factory: Any = None
 
-    def __enter__(self):
+    def __enter__(self) -> "PostgresConnection":
         return self
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool:
         if exc_type:
             self.conn.rollback()
         else:
@@ -81,7 +89,10 @@ class PostgresConnection:
         return PostgresCursor(cursor)
 
 
-def connect_recommendation_db():
+RecommendationDbConnection = sqlite3.Connection | PostgresConnection
+
+
+def connect_recommendation_db() -> RecommendationDbConnection:
     if USE_POSTGRES:
         return PostgresConnection()
     return sqlite3.connect(RECOMMENDATION_DB)

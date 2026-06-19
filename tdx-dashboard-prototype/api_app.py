@@ -1131,7 +1131,7 @@ def nearest_positioned_item(items: list[dict[str, Any]], lat: float | None, lon:
         if nearest_distance is None or distance < nearest_distance:
             nearest = summary
             nearest_distance = distance
-    if nearest is None:
+    if nearest is None or nearest_distance is None:
         return None
     nearest["distance_m"] = round(nearest_distance)
     return nearest

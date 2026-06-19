@@ -10,7 +10,7 @@ import re
 import secrets
 import sqlite3
 import uuid
-from typing import Any
+from typing import Any, cast
 
 import requests
 from fastapi import HTTPException
@@ -227,6 +227,13 @@ def login_google_user(payload: dict[str, Any]) -> dict[str, Any]:
     return auth_response(row)
 
 
+def required_float(value: Any, field_name: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} 座標不正確") from exc
+
+
 def normalize_favorite_starts(raw_starts: Any) -> list[dict[str, Any]]:
     starts = []
     if not isinstance(raw_starts, list):
@@ -234,9 +241,10 @@ def normalize_favorite_starts(raw_starts: Any) -> list[dict[str, Any]]:
     for item in raw_starts[:2]:
         if not isinstance(item, dict):
             continue
-        label = str(item.get("label") or "").strip()[:24]
-        lat = float(item.get("lat"))
-        lon = float(item.get("lon"))
+        item_data = cast(dict[str, Any], item)
+        label = str(item_data.get("label") or "").strip()[:24]
+        lat = required_float(item_data.get("lat"), "lat")
+        lon = required_float(item_data.get("lon"), "lon")
         if not label:
             raise ValueError("請先為常用起點命名")
         if not (-90 <= lat <= 90 and -180 <= lon <= 180):
@@ -244,7 +252,7 @@ def normalize_favorite_starts(raw_starts: Any) -> list[dict[str, Any]]:
         if not is_within_service_area(lat, lon):
             raise ValueError(f"常用起始點不在服務區域內；目前服務區域暫定為{SERVICE_AREA_LABEL}")
         starts.append({
-            "id": str(item.get("id") or uuid.uuid4().hex),
+            "id": str(item_data.get("id") or uuid.uuid4().hex),
             "label": label,
             "lat": round(lat, 6),
             "lon": round(lon, 6),

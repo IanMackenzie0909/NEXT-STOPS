@@ -351,7 +351,8 @@ def google_find_place_id(query: str) -> str:
         return ""
 
     candidates = payload.get("candidates") or []
-    place_id = str(candidates[0].get("place_id") or "").strip() if candidates else ""
+    first_candidate = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
+    place_id = str(first_candidate.get("place_id") or "").strip()
     google_place_lookup_cache[normalized_query] = place_id
     return place_id
 
@@ -360,7 +361,8 @@ def raw_google_place_id(raw: dict[str, Any]) -> str:
     direct = str(raw.get("geocoded_place_id") or raw.get("place_id") or "").strip()
     if direct:
         return direct
-    source_ids = raw.get("source_ids") if isinstance(raw.get("source_ids"), dict) else {}
+    raw_source_ids = raw.get("source_ids")
+    source_ids = raw_source_ids if isinstance(raw_source_ids, dict) else {}
     for key in ("google_places", "google", "place_id"):
         value = str(source_ids.get(key) or "").strip()
         if value:
